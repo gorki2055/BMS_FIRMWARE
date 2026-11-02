@@ -1,0 +1,27 @@
+# Python virtual environments & bytecode
+.venv/
+env/
+venv/
+__pycache__/
+*.py[cod]
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Build artifacts
+build/
+*.o
+*.obj
+*.elf
+*.map
+*.lst
+*.exe
+
+# Ghidra project lock and user files
+*.lock
+*.lock~
+*.user
+
