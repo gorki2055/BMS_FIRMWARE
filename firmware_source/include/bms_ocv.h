@@ -10,10 +10,25 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "bms_types.h"
 
 #define BMS_OCV_SOC_POINTS               21   /**< 0% to 100% in 5% increments */
 #define BMS_OCV_TEMP_BANDS_AVAIL         12   /**< 12 temperature columns in FUN_08010654 */
 #define BMS_OCV_TEMP_BANDS_THERMAL       13   /**< 13 temperature columns in FUN_080103c8 */
+#define BMS_OCV_QUIESCENT_CURRENT_MA     800  /**< Polarization decay threshold (0.8A from Flash 0x08020858) */
+#define BMS_OCV_RELAX_DURATION_SEC       20   /**< 20 seconds consecutive rest for OCV latch (Flash 0x0801B55C) */
+
+/**
+ * @brief Initialize Hybrid SOC Estimator with chemical 2D OCV curve
+ */
+void bms_soc_estimator_init(BmsContext_t *ctx);
+
+/**
+ * @brief Periodic dynamic update: Coulomb Counting under load + 2D OCV Recalibration at rest
+ * @param ctx BMS context
+ * @param delta_ms Elapsed time in milliseconds since last update
+ */
+void bms_soc_estimator_update(BmsContext_t *ctx, uint32_t delta_ms);
 
 /**
  * @brief Look up chemical State of Charge (SOC %) from cell voltage and temperature
@@ -50,3 +65,4 @@ float bms_ocv_get_capacity_derate(uint8_t soc_pct, int16_t temp_c);
 float bms_ocv_get_thermal_derate(uint8_t soc_pct, int16_t temp_c);
 
 #endif /* __BMS_OCV_H__ */
+

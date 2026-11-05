@@ -23,6 +23,8 @@ void bms_core_init(BmsContext_t *ctx) {
 
     strncpy(ctx->serial_number, "6495-SPB24-DVC24-006", sizeof(ctx->serial_number) - 1);
 
+    bms_soc_estimator_init(ctx);
+
     ctx->state = BMS_STATE_STANDBY;
 }
 
@@ -81,13 +83,9 @@ void bms_core_update_balancing(BmsContext_t *ctx) {
 
 void bms_core_calculate_soc(BmsContext_t *ctx) {
     if (!ctx) return;
-    BmsTelemetry_t *t = &ctx->telemetry;
 
-    /* 2D Chemical OCV vs SOC and Temperature Engine (reconstructed from FUN_08010654 / FUN_080103c8) */
-    t->soc_pct = bms_ocv_lookup_soc(t->min_cell_mv, t->min_temp_c);
-
-    /* Update dynamic remaining capacity using learned full capacity */
-    t->remaining_mah = (t->total_capacity_mah * (uint32_t)t->soc_pct) / 100;
+    /* Hybrid Coulomb Counting under load + 2D Chemical OCV Recalibration at rest */
+    bms_soc_estimator_update(ctx, 1000);
 }
 
 /**

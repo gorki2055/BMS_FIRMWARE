@@ -87,16 +87,25 @@ typedef struct {
     uint32_t balance_mask;               /* Bitmask of active balancing cells (bits 0..20) */
 } BmsTelemetry_t;
 
+/* Dynamic SOC Estimator State (Coulomb Counter + 2D OCV Fusion) */
+typedef struct {
+    int64_t  accum_coulombs_mas;   /* Accumulated milliampere-seconds (mAs) */
+    uint32_t rest_duration_sec;    /* Consecutive seconds in quiescent state (< 0.8A) */
+    bool     is_relaxed;           /* True when polarization voltage has decayed */
+    uint8_t  last_ocv_soc;         /* Last chemical OCV calibration anchor (0-100%) */
+} BmsSocEstimator_t;
+
 /* Overall BMS Runtime Context */
 typedef struct {
-    BmsState_t       state;
-    BmsRole_t        role;
-    uint8_t          can_sid;            /* 0x14 for Master, 0x1D for Slave */
-    BmsFaultFlags_t  faults;
-    BmsSwitchState_t switches;
-    BmsTelemetry_t   telemetry;
-    uint32_t         uptime_seconds;
-    char             serial_number[32];
+    BmsState_t        state;
+    BmsRole_t         role;
+    uint8_t           can_sid;            /* 0x14 for Master, 0x1D for Slave */
+    BmsFaultFlags_t   faults;
+    BmsSwitchState_t  switches;
+    BmsTelemetry_t    telemetry;
+    BmsSocEstimator_t soc_est;            /* Hybrid Coulomb-Counting / 2D OCV estimator */
+    uint32_t          uptime_seconds;
+    char              serial_number[32];
 } BmsContext_t;
 
 #endif /* __BMS_TYPES_H__ */

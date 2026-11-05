@@ -231,3 +231,75 @@ uint8_t bms_ocv_lookup_soc(uint16_t cell_mv, int16_t temp_c) {
 
     return 0;
 }
+
+/* ========================================================================== */
+/* Hybrid SOC Estimator: Coulomb Counting + 2D OCV Quiescent Fusion          */
+/* ========================================================================== */
+
+void bms_soc_estimator_init(BmsContext_t *ctx) {
+    if (!ctx) return;
+    BmsTelemetry_t *t = &ctx->telemetry;
+    BmsSocEstimator_t *est = &ctx->soc_est;
+
+    uint8_t ocv_soc = bms_ocv_lookup_soc(t->min_cell_mv, t->min_temp_c);
+    if (ocv_soc == 0 && t->min_cell_mv == 0) {
+        /* Default to 100% on cold uninitialized boot */
+        ocv_soc = 100;
+    }
+
+    t->soc_pct = ocv_soc;
+    est->last_ocv_soc = ocv_soc;
+    est->is_relaxed = true;
+    est->accum_coulombs_mas = 0;
+    est->rest_duration_sec = BMS_OCV_RELAX_DURATION_SEC;
+
+    t->remaining_mah = (t->total_capacity_mah * (uint32_t)ocv_soc) / 100;
+}
+
+void bms_soc_estimator_update(BmsContext_t *ctx, uint32_t delta_ms) {
+    if (!ctx || delta_ms == 0) return;
+    BmsTelemetry_t *t = &ctx->telemetry;
+    BmsSocEstimator_t *est = &ctx->soc_est;
+
+    int32_t current_ma = t->current_ma;
+    int32_t abs_curr = (current_ma < 0) ? -current_ma : current_ma;
+
+    /* Check for polarization relaxation (quiescent current < 800mA from Flash 0x08020858) */
+    if (abs_curr < BMS_OCV_QUIESCENT_CURRENT_MA) {
+        est->rest_duration_sec += (delta_ms / 1000);
+        if (est->rest_duration_sec >= BMS_OCV_RELAX_DURATION_SEC) {
+            est->is_relaxed = true;
+            /* Battery is fully relaxed: perform chemical 2D OCV recalibration */
+            uint8_t ocv_soc = bms_ocv_lookup_soc(t->min_cell_mv, t->min_temp_c);
+            est->last_ocv_soc = ocv_soc;
+            t->soc_pct = ocv_soc;
+            t->remaining_mah = (t->total_capacity_mah * (uint32_t)ocv_soc) / 100;
+            est->accum_coulombs_mas = 0;
+            return;
+        }
+    } else {
+        /* Current flowing under charge or discharge: reset relaxation timer */
+        est->rest_duration_sec = 0;
+        est->is_relaxed = false;
+    }
+
+    /* Under load: Perform Coulomb integration (Ah counting) */
+    /* delta_mas = mA * ms */
+    int64_t delta_mas = (int64_t)current_ma * (int64_t)delta_ms;
+    est->accum_coulombs_mas += delta_mas;
+
+    /* 1 mAh = 3,600,000 mA*ms */
+    int32_t delta_mah = (int32_t)(est->accum_coulombs_mas / 3600000LL);
+    if (delta_mah != 0) {
+        int32_t new_rem = (int32_t)t->remaining_mah + delta_mah;
+        if (new_rem < 0) new_rem = 0;
+        if (new_rem > (int32_t)t->total_capacity_mah) new_rem = t->total_capacity_mah;
+
+        t->remaining_mah = (uint32_t)new_rem;
+        if (t->total_capacity_mah > 0) {
+            t->soc_pct = (uint8_t)((t->remaining_mah * 100) / t->total_capacity_mah);
+        }
+        est->accum_coulombs_mas %= 3600000LL;
+    }
+}
+

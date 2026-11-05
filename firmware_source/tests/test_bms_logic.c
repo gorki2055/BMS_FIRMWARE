@@ -151,12 +151,50 @@ int main(void) {
     /* Verify core integration: bms_core_calculate_soc uses OCV engine */
     ctx.telemetry.min_cell_mv = 3608;
     ctx.telemetry.min_temp_c = 25;
+    ctx.soc_est.rest_duration_sec = 25; /* Force relaxed state */
     bms_core_calculate_soc(&ctx);
     assert(ctx.telemetry.soc_pct == 50);
     printf("PASS (OCV: 3608mV->50%%, 4185mV->100%%, 2621mV->0%%, 2D Matrices: 21x12, 21x13)\n");
 
+    /* Test 11: Dynamic Coulomb-Counting & Quiescent OCV Recalibration Fusion */
+    printf("[Test 11] Hybrid Coulomb Counting & Rest Recalibration... ");
+    /* 1. Start fully charged (70000 mAh, 100%) */
+    bms_core_init(&ctx);
+    ctx.telemetry.total_capacity_mah = 70000;
+    ctx.telemetry.remaining_mah = 70000;
+    ctx.telemetry.soc_pct = 100;
+    ctx.telemetry.min_cell_mv = 4185;
+    ctx.telemetry.min_temp_c = 25;
+
+    /* 2. Discharge at 36 A (-36000 mA) for 100 seconds (100 ticks of 1000ms) */
+    /* Total charge discharged: 36A * 100s = 3600 As = 1000 mAh */
+    ctx.telemetry.current_ma = -36000;
+    for (int sec = 0; sec < 100; sec++) {
+        bms_core_calculate_soc(&ctx);
+    }
+    assert(ctx.soc_est.is_relaxed == false);
+    assert(ctx.telemetry.remaining_mah == 69000); /* 70000 - 1000 = 69000 mAh */
+    assert(ctx.telemetry.soc_pct == 98);          /* 69000 / 70000 = 98.5% -> 98% */
+
+    /* 3. Enter rest/quiescent state (current = 0 mA) */
+    ctx.telemetry.current_ma = 0;
+    ctx.telemetry.min_cell_mv = 3608; /* Nominal 50% OCV after settling */
+    for (int sec = 0; sec < 19; sec++) {
+        bms_core_calculate_soc(&ctx);
+    }
+    /* At 19 seconds, still relaxing */
+    assert(ctx.soc_est.is_relaxed == false);
+    assert(ctx.telemetry.soc_pct == 98);
+
+    /* 4. On 20th second (quiescent threshold met), OCV recalibrates to true 50% */
+    bms_core_calculate_soc(&ctx);
+    assert(ctx.soc_est.is_relaxed == true);
+    assert(ctx.telemetry.soc_pct == 50);
+    assert(ctx.telemetry.remaining_mah == 35000); /* 70000 * 50% = 35000 mAh */
+    printf("PASS (Discharge -36A: 1000mAh Ah-count -> Rest 20s: OCV latch 50%%)\n");
+
     printf("\n========================================================\n");
-    printf("[✔] All 10 BMS Firmware Unit Tests PASSED Successfully!\n");
+    printf("[✔] All 11 BMS Firmware Unit Tests PASSED Successfully!\n");
     printf("========================================================\n");
 
     return 0;
