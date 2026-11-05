@@ -35,6 +35,7 @@ C_SOURCES = \
 	src/bms_can.c \
 	src/bms_parallel.c \
 	src/dvc1124_afe.c \
+	src/bms_ocv.c \
 	src/bms_hal.c \
 	cmsis/startup_n32g45x.c
 

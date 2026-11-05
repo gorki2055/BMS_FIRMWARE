@@ -7,6 +7,7 @@
 #include "bms_config.h"
 #include "bms_hal.h"
 #include "dvc1124_afe.h"
+#include "bms_ocv.h"
 #include <string.h>
 
 void bms_core_init(BmsContext_t *ctx) {
@@ -79,18 +80,14 @@ void bms_core_update_balancing(BmsContext_t *ctx) {
 }
 
 void bms_core_calculate_soc(BmsContext_t *ctx) {
+    if (!ctx) return;
     BmsTelemetry_t *t = &ctx->telemetry;
 
-    /* Simple linear interpolation between nominal and cutoff for baseline */
-    if (t->min_cell_mv >= BMS_CELL_OVP_RELEASE_MV) {
-        t->soc_pct = 100;
-    } else if (t->min_cell_mv <= BMS_CELL_UVC_CUTOFF_MV) {
-        t->soc_pct = 0;
-    } else {
-        uint32_t range = BMS_CELL_OVP_RELEASE_MV - BMS_CELL_UVC_CUTOFF_MV;
-        uint32_t delta = t->min_cell_mv - BMS_CELL_UVC_CUTOFF_MV;
-        t->soc_pct = (uint8_t)((delta * 100) / range);
-    }
+    /* 2D Chemical OCV vs SOC and Temperature Engine (reconstructed from FUN_08010654 / FUN_080103c8) */
+    t->soc_pct = bms_ocv_lookup_soc(t->min_cell_mv, t->min_temp_c);
+
+    /* Update dynamic remaining capacity using learned full capacity */
+    t->remaining_mah = (t->total_capacity_mah * (uint32_t)t->soc_pct) / 100;
 }
 
 /**

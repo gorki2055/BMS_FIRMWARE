@@ -199,6 +199,38 @@ $$\text{SOH}_{\text{cycle}} = \max\left(0,\; 100.0 - (\text{cycle\_count} \times
 - If divergence exceeds 3.0 Ah, dynamic recalibration updates learned Full Charge Capacity (FCC):
 $$C_{\text{learned}} = \left(1.0 - \frac{2.0 \times (C_{\text{meas}} - C_{\text{est}})}{C_{\text{est}}}\right) \times C_{\text{est}}$$
 
+### 6.3 2D Chemical OCV-SOC Lookup Table Engine
+
+The battery chemical State of Charge is derived from cell open circuit voltage and pack temperature using dual 2D matrices extracted from the scatterload table (`0x08023184` decompressed into SRAM `0x20020572` and `0x20020720`):
+
+#### 1. Chemical OCV Baseline at 25°C (21S 70Ah NCM)
+The curve spans 21 SOC steps ($100\%$ down to $0\%$ in $5\%$ increments):
+- **100%:** 4,185 mV (Calibrated Over-Voltage Cutoff)
+- **95%:** 4,100 mV (OVP Release)
+- **90%:** 4,040 mV | **85%:** 3,980 mV | **80%:** 3,920 mV
+- **75%:** 3,870 mV | **70%:** 3,820 mV | **65%:** 3,770 mV
+- **60%:** 3,720 mV | **55%:** 3,670 mV
+- **50%:** 3,608 mV (Calibrated Nominal Cell Voltage)
+- **45%:** 3,560 mV | **40%:** 3,510 mV | **35%:** 3,460 mV
+- **30%:** 3,400 mV | **25%:** 3,340 mV | **20%:** 3,260 mV
+- **15%:** 3,160 mV | **10%:** 3,020 mV
+- **5%:** 2,831 mV (Calibrated Under-Voltage Warning)
+- **0%:** 2,621 mV (Calibrated Under-Voltage Cutoff)
+
+#### 2. Table 1: Chemical Capacity Availability Matrix ($21 \times 12$)
+- **SRAM Address:** `0x20020572` (decompressed from Flash `0x08023184`, used in `FUN_08010654`).
+- **Rows (21):** SOC $100\%$ to $0\%$ in $5\%$ intervals.
+- **Columns (12):** Temperature bands ($< -20^\circ\text{C}$ up to $\ge 60^\circ\text{C}$).
+- **Formula:** Capacity availability in Ah $= \text{Matrix}[row][col] \times 0.1$.
+- Models chemical capacity loss under severe sub-zero cold ($<-20^\circ\text{C} \rightarrow 0\text{ Ah}$) versus optimal range ($25^\circ\text{C} \rightarrow 2.0\text{ Ah}$).
+
+#### 3. Table 2: Thermal Voltage Relaxation Matrix ($21 \times 13$)
+- **SRAM Address:** `0x20020720` (decompressed from Flash `0x08023184`, used in `FUN_080103c8`).
+- **Rows (21):** SOC $100\%$ to $0\%$ in $5\%$ intervals.
+- **Columns (13):** Temperature bands ($< 0^\circ\text{C}$ to $\ge 51^\circ\text{C}$).
+- **Formula:** Thermal voltage shift $= \text{Matrix}[row][col] \times 0.01$.
+- Compensates for NCM internal resistance impedance voltage sag across temperatures.
+
 ---
 
 ## 7. CAN 2.0B Communication Matrix (250 kbps)
@@ -234,6 +266,7 @@ All recovered components are integrated into the modular C skeleton in [`firmwar
 - `include/bms_types.h`: Structured telemetry, switch status, and bitfield fault flags.
 - `include/dvc1124_afe.h`: Complete AFE register definitions, scaling factors, and prototypes.
 - `src/dvc1124_afe.c`: AFE driver implementing register reads, ADC scaling, and CRC8.
+- `src/bms_ocv.c`: 2D OCV-SOC lookup engine, chemical curves, and temperature derating.
 - `src/bms_core.c`: Core state machine, safety supervisor, and SOH cycle degradation.
 - `src/bms_can.c`: CAN 2.0B communication engine and frame pack/unpack routines.
 - `src/bms_hal.c`: Hardware abstraction layer with host-simulation fallbacks.
@@ -242,8 +275,9 @@ All recovered components are integrated into the modular C skeleton in [`firmwar
 ### How to Compile and Verify:
 ```powershell
 # Compile host-native unit test suite with MSYS2 GCC
-& "C:\msys64\ucrt64\bin\gcc.exe" -I firmware_source/include -I firmware_source/cmsis -o firmware_source/tests/test_bms_logic.exe firmware_source/tests/test_bms_logic.c firmware_source/src/bms_core.c firmware_source/src/bms_can.c firmware_source/src/bms_parallel.c firmware_source/src/dvc1124_afe.c firmware_source/src/bms_hal.c
+& "C:\msys64\ucrt64\bin\gcc.exe" -I firmware_source/include -I firmware_source/cmsis -o firmware_source/tests/test_bms_logic.exe firmware_source/tests/test_bms_logic.c firmware_source/src/bms_core.c firmware_source/src/bms_can.c firmware_source/src/bms_parallel.c firmware_source/src/dvc1124_afe.c firmware_source/src/bms_ocv.c firmware_source/src/bms_hal.c
 
 # Execute tests
 ./firmware_source/tests/test_bms_logic.exe
 ```
+

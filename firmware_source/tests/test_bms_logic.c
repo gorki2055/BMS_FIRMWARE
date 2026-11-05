@@ -11,6 +11,7 @@
 #include "bms_can.h"
 #include "bms_parallel.h"
 #include "dvc1124_afe.h"
+#include "bms_ocv.h"
 
 int main(void) {
     printf("========================================================\n");
@@ -128,8 +129,34 @@ int main(void) {
     assert(dvc1124_set_balancing(0x001FFFFF) == true);
     printf("PASS (V: 0.1mV/cnt, I: 5mA/cnt, Regs: 0x01..0x56)\n");
 
+    /* Test 10: 2D OCV-SOC Lookup Table Engine & Temperature Derating */
+    printf("[Test 10] 2D Chemical OCV-SOC Engine & Matrices... ");
+    /* Verify chemical OCV lookups at 25°C */
+    assert(bms_ocv_lookup_soc(4185, 25) == 100);
+    assert(bms_ocv_lookup_soc(3608, 25) == 50);   /* Calibrated 50% nominal */
+    assert(bms_ocv_lookup_soc(2831, 25) == 5);    /* Calibrated 5% UVW */
+    assert(bms_ocv_lookup_soc(2621, 25) == 0);    /* Calibrated 0% UVC cutoff */
+
+    /* Verify capacity availability matrix Table 1 (FUN_08010654) */
+    float cap_derate_100 = bms_ocv_get_capacity_derate(100, 25);
+    assert(cap_derate_100 >= 1.99f && cap_derate_100 <= 2.01f); /* 20 * 0.1 = 2.0 Ah */
+
+    float cap_derate_cold = bms_ocv_get_capacity_derate(100, -25);
+    assert(cap_derate_cold == 0.0f); /* Col 0: 0 Ah */
+
+    /* Verify thermal relaxation matrix Table 2 (FUN_080103c8) */
+    float th_derate_50 = bms_ocv_get_thermal_derate(50, 25);
+    assert(th_derate_50 >= 0.49f && th_derate_50 <= 0.51f); /* 50 * 0.01 = 0.50 */
+
+    /* Verify core integration: bms_core_calculate_soc uses OCV engine */
+    ctx.telemetry.min_cell_mv = 3608;
+    ctx.telemetry.min_temp_c = 25;
+    bms_core_calculate_soc(&ctx);
+    assert(ctx.telemetry.soc_pct == 50);
+    printf("PASS (OCV: 3608mV->50%%, 4185mV->100%%, 2621mV->0%%, 2D Matrices: 21x12, 21x13)\n");
+
     printf("\n========================================================\n");
-    printf("[✔] All 9 BMS Firmware Unit Tests PASSED Successfully!\n");
+    printf("[✔] All 10 BMS Firmware Unit Tests PASSED Successfully!\n");
     printf("========================================================\n");
 
     return 0;
