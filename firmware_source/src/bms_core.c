@@ -21,6 +21,14 @@ void bms_core_init(BmsContext_t *ctx) {
     ctx->telemetry.soc_pct = 100;
     ctx->telemetry.soh_pct = 100;
 
+    /* Initialize default protection thresholds from calibrated configuration */
+    ctx->limits.cell_ovp_mv   = BMS_CELL_OVP_MV;
+    ctx->limits.cell_uvp_mv   = BMS_CELL_UVC_CUTOFF_MV;
+    ctx->limits.chg_ocp_ma    = BMS_MAX_CHARGE_CURRENT_A * 1000;
+    ctx->limits.dsg_ocp_ma    = BMS_MAX_CONTINUOUS_DSG_A * 1000;
+    ctx->limits.ot_protect_c  = BMS_DSG_OT_PROTECT_C;
+    ctx->limits.ut_protect_c  = BMS_DSG_UT_PROTECT_C;
+
     strncpy(ctx->serial_number, "6495-SPB24-DVC24-006", sizeof(ctx->serial_number) - 1);
 
     bms_soc_estimator_init(ctx);

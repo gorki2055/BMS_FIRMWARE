@@ -87,6 +87,16 @@ typedef struct {
     uint32_t balance_mask;               /* Bitmask of active balancing cells (bits 0..20) */
 } BmsTelemetry_t;
 
+/* Runtime Protection Limits & Thresholds (Stored in EEPROM 0x0020) */
+typedef struct {
+    uint16_t cell_ovp_mv;         /* Cell Over-Voltage Protection (default: 4185 mV) */
+    uint16_t cell_uvp_mv;         /* Cell Under-Voltage Protection (default: 2621 mV) */
+    int32_t  chg_ocp_ma;          /* Charge Over-Current (default: 35000 mA) */
+    int32_t  dsg_ocp_ma;          /* Discharge Over-Current (default: 70000 mA) */
+    float    ot_protect_c;        /* Over-Temperature Cutoff (default: 65.0 C) */
+    float    ut_protect_c;        /* Under-Temperature Cutoff (default: -10.0 C) */
+} BmsLimits_t;
+
 /* Dynamic SOC Estimator State (Coulomb Counter + 2D OCV Fusion) */
 typedef struct {
     int64_t  accum_coulombs_mas;   /* Accumulated milliampere-seconds (mAs) */
@@ -103,6 +113,7 @@ typedef struct {
     BmsFaultFlags_t   faults;
     BmsSwitchState_t  switches;
     BmsTelemetry_t    telemetry;
+    BmsLimits_t       limits;             /* Runtime / EEPROM protection limits */
     BmsSocEstimator_t soc_est;            /* Hybrid Coulomb-Counting / 2D OCV estimator */
     uint32_t          uptime_seconds;
     char              serial_number[32];

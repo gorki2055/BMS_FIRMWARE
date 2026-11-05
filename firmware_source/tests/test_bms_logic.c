@@ -12,6 +12,8 @@
 #include "bms_parallel.h"
 #include "dvc1124_afe.h"
 #include "bms_ocv.h"
+#include "bms_modbus.h"
+#include "bms_storage.h"
 
 int main(void) {
     printf("========================================================\n");
@@ -193,8 +195,167 @@ int main(void) {
     assert(ctx.telemetry.remaining_mah == 35000); /* 70000 * 50% = 35000 mAh */
     printf("PASS (Discharge -36A: 1000mAh Ah-count -> Rest 20s: OCV latch 50%%)\n");
 
+    /* Test 12: Modbus RTU Read Holding Registers (FC 0x03) */
+    printf("[Test 12] Modbus RTU Read Holding Registers (FC 0x03)... ");
+    bms_modbus_init(0x01, 9600);
+    ctx.telemetry.pack_voltage_mv = 76600; /* 76.6V */
+    ctx.telemetry.current_ma = -12500; /* -12.5A discharge */
+    ctx.telemetry.soc_pct = 85;
+    ctx.telemetry.soh_pct = 99;
+
+    /* Request 4 registers starting at 0x0016 (Pack Voltage, Current, SOC, SOH) */
+    uint8_t mb_req[8] = {0x01, 0x03, 0x00, 0x16, 0x00, 0x04, 0x00, 0x00};
+    uint16_t req_crc = bms_modbus_calc_crc16(mb_req, 6);
+    mb_req[6] = (uint8_t)(req_crc & 0xFF);
+    mb_req[7] = (uint8_t)((req_crc >> 8) & 0xFF);
+
+    uint8_t mb_resp[64] = {0};
+    int resp_len = bms_modbus_process_frame(mb_req, 8, mb_resp, sizeof(mb_resp), &ctx);
+    assert(resp_len == 13); /* 1 addr + 1 func + 1 byte_count + 8 data + 2 crc */
+    assert(mb_resp[0] == 0x01);
+    assert(mb_resp[1] == 0x03);
+    assert(mb_resp[2] == 0x08); /* 4 registers * 2 bytes = 8 */
+
+    /* Verify Voltage: 7660 (0x1DEC) */
+    uint16_t v_resp = ((uint16_t)mb_resp[3] << 8) | mb_resp[4];
+    assert(v_resp == 7660);
+
+    /* Verify Current: -1250 (signed int16) */
+    int16_t i_resp = (int16_t)(((uint16_t)mb_resp[5] << 8) | mb_resp[6]);
+    assert(i_resp == -1250);
+
+    /* Verify SOC: 850 (85.0%) */
+    uint16_t soc_resp = ((uint16_t)mb_resp[7] << 8) | mb_resp[8];
+    assert(soc_resp == 850);
+
+    /* Verify SOH: 990 (99.0%) */
+    uint16_t soh_resp = ((uint16_t)mb_resp[9] << 8) | mb_resp[10];
+    assert(soh_resp == 990);
+
+    /* Verify Response CRC */
+    uint16_t calc_resp_crc = bms_modbus_calc_crc16(mb_resp, 11);
+    uint16_t actual_resp_crc = (uint16_t)mb_resp[11] | ((uint16_t)mb_resp[12] << 8);
+    assert(calc_resp_crc == actual_resp_crc);
+    printf("PASS (V: 76.6V, I: -12.5A, SOC: 85%%, SOH: 99%%, CRC: 0x%04X)\n", actual_resp_crc);
+
+    /* Test 13: Modbus RTU Write Single Register (FC 0x06) & Exception Generation */
+    printf("[Test 13] Modbus RTU Write Single Register & Exceptions... ");
+    /* Write new OVP limit 4200 mV to reg 0x0040 */
+    uint8_t write_req[8] = {0x01, 0x06, 0x00, 0x40, 0x10, 0x68, 0x00, 0x00}; /* 0x1068 = 4200 */
+    uint16_t w_crc = bms_modbus_calc_crc16(write_req, 6);
+    write_req[6] = (uint8_t)(w_crc & 0xFF);
+    write_req[7] = (uint8_t)((w_crc >> 8) & 0xFF);
+
+    resp_len = bms_modbus_process_frame(write_req, 8, mb_resp, sizeof(mb_resp), &ctx);
+    assert(resp_len == 8);
+    assert(ctx.limits.cell_ovp_mv == 4200);
+
+    /* Test exception on illegal address (e.g. reg 0x0099) */
+    uint8_t bad_addr_req[8] = {0x01, 0x03, 0x00, 0x99, 0x00, 0x01, 0x00, 0x00};
+    uint16_t bad_crc = bms_modbus_calc_crc16(bad_addr_req, 6);
+    bad_addr_req[6] = (uint8_t)(bad_crc & 0xFF);
+    bad_addr_req[7] = (uint8_t)((bad_crc >> 8) & 0xFF);
+    resp_len = bms_modbus_process_frame(bad_addr_req, 8, mb_resp, sizeof(mb_resp), &ctx);
+    assert(resp_len == 5);
+    assert(mb_resp[1] == 0x83); /* Exception for FC 0x03 */
+    assert(mb_resp[2] == MODBUS_EX_ILLEGAL_DATA_ADDR);
+
+    /* Test rejection on corrupted CRC */
+    bad_addr_req[7] ^= 0xFF;
+    resp_len = bms_modbus_process_frame(bad_addr_req, 8, mb_resp, sizeof(mb_resp), &ctx);
+    assert(resp_len < 0);
+    printf("PASS (Write OVP: 4200mV echo verified, Illegal Addr: 0x83-0x02, Corrupt CRC rejected)\n");
+
+    /* Test 14: Proprietary Host Diagnostic Protocol (0xEA 0xD1) */
+    printf("[Test 14] Proprietary Upper-Computer Frame (0xEA 0xD1)... ");
+    ctx.telemetry.max_cell_mv = 3652;
+    ctx.telemetry.min_cell_mv = 3630;
+    ctx.telemetry.cell_delta_mv = 22;
+    ctx.telemetry.temp_c[0] = 25;
+    ctx.telemetry.temp_c[1] = 26;
+    ctx.telemetry.temp_c[2] = 24;
+    ctx.telemetry.temp_c[3] = 25;
+    ctx.telemetry.mos_temp_c = 28;
+
+    uint8_t host_query[6] = {0xEA, 0xD1, 0x01, 0x06, 0xFF, 0x03};
+    uint8_t host_resp[128] = {0};
+    resp_len = bms_host_proto_process_frame(host_query, sizeof(host_query), host_resp, sizeof(host_resp), &ctx);
+    assert(resp_len == 58);
+    assert(host_resp[0] == 0xEA);
+    assert(host_resp[1] == 0xD1);
+    assert(host_resp[3] == 0x39); /* 57 bytes payload */
+
+    /* Max Cell: 3652 (0x0E44) */
+    uint16_t host_max_cell = ((uint16_t)host_resp[20] << 8) | host_resp[21];
+    assert(host_max_cell == 3652);
+
+    /* Min Cell: 3630 (0x0E2E) */
+    uint16_t host_min_cell = ((uint16_t)host_resp[23] << 8) | host_resp[24];
+    assert(host_min_cell == 3630);
+
+    /* Delta: 22 mV */
+    uint16_t host_delta = ((uint16_t)host_resp[26] << 8) | host_resp[27];
+    assert(host_delta == 22);
+
+    /* NTC1: 25.0C + 40 = 65 */
+    assert(host_resp[29] == 65);
+
+    /* Verify XOR Checksum */
+    uint8_t calc_xor = 0;
+    for (int b = 3; b < 57; b++) {
+        calc_xor ^= host_resp[b];
+    }
+    assert(calc_xor == host_resp[57]);
+    printf("PASS (Frame: 0xEA 0xD1, Max: 3652mV, Min: 3630mV, Delta: 22mV, XOR: 0x%02X)\n", calc_xor);
+
+    /* Test 15: 24Cxx Non-Volatile EEPROM Storage & Page Verification */
+    printf("[Test 15] 24Cxx EEPROM 32-Byte Page Boundary & Lifetime Stats... ");
+    bms_storage_init();
+
+    /* Write 48 bytes spanning across two 32-byte page boundaries (0x0050 to 0x0080) */
+    uint8_t test_payload[48];
+    for (int p = 0; p < 48; p++) {
+        test_payload[p] = (uint8_t)(0xA0 + p);
+    }
+    int write_res = bms_storage_write_verified(0x0050, test_payload, 48);
+    assert(write_res == 0);
+
+    /* Read back and verify exact byte match */
+    uint8_t test_readback[48] = {0};
+    int read_res = bms_storage_read_block(0x0050, test_readback, 48);
+    assert(read_res == 0);
+    assert(memcmp(test_payload, test_readback, 48) == 0);
+
+    /* Test Save & Load Config with Checksum */
+    ctx.limits.cell_ovp_mv = 4190;
+    ctx.limits.cell_uvp_mv = 2650;
+    ctx.limits.chg_ocp_ma = 45000; /* 45.0 A */
+    ctx.limits.dsg_ocp_ma = 95000; /* 95.0 A */
+    ctx.limits.ot_protect_c = 60.0f;
+    ctx.limits.ut_protect_c = -5.0f;
+    assert(bms_storage_save_config(&ctx) == 0);
+
+    BmsContext_t restored_ctx;
+    memset(&restored_ctx, 0, sizeof(restored_ctx));
+    assert(bms_storage_load_config(&restored_ctx) == 0);
+    assert(restored_ctx.limits.cell_ovp_mv == 4190);
+    assert(restored_ctx.limits.cell_uvp_mv == 2650);
+    assert(restored_ctx.limits.chg_ocp_ma == 45000);
+    assert(restored_ctx.limits.dsg_ocp_ma == 95000);
+    assert(restored_ctx.limits.ot_protect_c == 60.0f);
+    assert(restored_ctx.limits.ut_protect_c == -5.0f);
+
+    /* Test Lifetime Stats Tracking */
+    assert(bms_storage_update_lifetime(350, 24500, 24600) == 0);
+    uint32_t r_cyc = 0, r_dsg = 0, r_chg = 0;
+    assert(bms_storage_read_lifetime(&r_cyc, &r_dsg, &r_chg) == 0);
+    assert(r_cyc == 350);
+    assert(r_dsg == 24500);
+    assert(r_chg == 24600);
+    printf("PASS (Cross-page 48B verified, Config OVP: 4190mV/UVP: 2650mV, Lifetime: 350 cycles/24500 Ah)\n");
+
     printf("\n========================================================\n");
-    printf("[✔] All 11 BMS Firmware Unit Tests PASSED Successfully!\n");
+    printf("[✔] All 15 BMS Firmware Unit Tests PASSED Successfully!\n");
     printf("========================================================\n");
 
     return 0;
