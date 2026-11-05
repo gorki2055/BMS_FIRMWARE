@@ -53,6 +53,37 @@ void bms_can_send_status(const BmsContext_t *ctx) {
     bms_can_transmit(&msg);
 }
 
+/**
+ * @brief Transmit Dynamic Capacity, SOC, and SOH Frame
+ * @note Reconstructed directly from FUN_0801b55c (Flash 0x0801B55C, CMD 0x40 Index 0x01):
+ *       - D0, D1: Total Full Charge Capacity (FCC) in 10 mAh units (Little-Endian)
+ *       - D2, D3: Remaining Capacity in 10 mAh units (Little-Endian)
+ *       - D4:     Relative SOC percentage (0 - 100%)
+ *       - D5:     State of Health (SOH) / Absolute Capacity percentage (0 - 100%)
+ *       - D6:     Status flags
+ */
+void bms_can_send_capacity_soh(const BmsContext_t *ctx) {
+    const BmsTelemetry_t *t = &ctx->telemetry;
+    CanMessage_t msg;
+
+    /* ID: Priority 6, SID = own_sid, DID = VCU (0x00), CMD = 0x40, IDX = 0x01 */
+    msg.id = BMS_CAN_BUILD_ID(6, s_own_sid, 0x00, CAN_CMD_PACK_CONFIG, CAN_IDX_CFG_CAPACITY_SOH);
+    msg.dlc = 7;
+
+    uint16_t fcc_10mah = (uint16_t)(t->total_capacity_mah / 10);
+    uint16_t rem_10mah = (uint16_t)(t->remaining_mah / 10);
+
+    msg.data[0] = (uint8_t)(fcc_10mah & 0xFF);
+    msg.data[1] = (uint8_t)((fcc_10mah >> 8) & 0xFF);
+    msg.data[2] = (uint8_t)(rem_10mah & 0xFF);
+    msg.data[3] = (uint8_t)((rem_10mah >> 8) & 0xFF);
+    msg.data[4] = t->soc_pct;
+    msg.data[5] = t->soh_pct;
+    msg.data[6] = 0;
+
+    bms_can_transmit(&msg);
+}
+
 void bms_can_send_cell_voltages(const BmsContext_t *ctx) {
     const BmsTelemetry_t *t = &ctx->telemetry;
 
@@ -111,19 +142,23 @@ void bms_can_process_rx(const CanMessage_t *msg, BmsContext_t *ctx) {
             else if (idx == CAN_IDX_TEL_TEMPS) bms_can_send_temperatures(ctx);
         } else if (cmd == CAN_CMD_CELL_VOLTAGES) {
             bms_can_send_cell_voltages(ctx);
-        } else if (cmd == CAN_CMD_PACK_CONFIG && idx == CAN_IDX_CFG_RATING) {
-            CanMessage_t resp;
-            resp.id = BMS_CAN_BUILD_ID(6, s_own_sid, BMS_CAN_EXTRACT_SID(msg->id), CAN_CMD_PACK_CONFIG, CAN_IDX_CFG_RATING);
-            resp.dlc = 8;
-            resp.data[0] = BMS_SERIES_CELLS;                      /* 21 strings */
-            resp.data[1] = 1;                                     /* 1 parallel */
-            resp.data[2] = (uint8_t)((7000 >> 8) & 0xFF);        /* 7000 * 10mAh = 70Ah */
-            resp.data[3] = (uint8_t)(7000 & 0xFF);
-            resp.data[4] = (uint8_t)(BMS_MAX_CHARGE_CURRENT_A * 2.5f);
-            resp.data[5] = (uint8_t)BMS_MAX_CONTINUOUS_DSG_A;
-            resp.data[6] = 0x03;                                  /* Design cycle (1000) */
-            resp.data[7] = 0xE8;
-            bms_can_transmit(&resp);
+        } else if (cmd == CAN_CMD_PACK_CONFIG) {
+            if (idx == CAN_IDX_CFG_CAPACITY_SOH) {
+                bms_can_send_capacity_soh(ctx);
+            } else if (idx == CAN_IDX_CFG_RATING) {
+                CanMessage_t resp;
+                resp.id = BMS_CAN_BUILD_ID(6, s_own_sid, BMS_CAN_EXTRACT_SID(msg->id), CAN_CMD_PACK_CONFIG, CAN_IDX_CFG_RATING);
+                resp.dlc = 8;
+                resp.data[0] = BMS_SERIES_CELLS;                      /* 21 strings */
+                resp.data[1] = 1;                                     /* 1 parallel */
+                resp.data[2] = (uint8_t)((7000 >> 8) & 0xFF);        /* 7000 * 10mAh = 70Ah */
+                resp.data[3] = (uint8_t)(7000 & 0xFF);
+                resp.data[4] = (uint8_t)(BMS_MAX_CHARGE_CURRENT_A * 2.5f);
+                resp.data[5] = (uint8_t)BMS_MAX_CONTINUOUS_DSG_A;
+                resp.data[6] = 0x03;                                  /* Design cycle (1000) */
+                resp.data[7] = 0xE8;
+                bms_can_transmit(&resp);
+            }
         }
     } else if (cmd == CAN_CMD_CONTROL) {
         if (idx == CAN_IDX_CTRL_SWITCH_PACK && msg->dlc >= 1) {

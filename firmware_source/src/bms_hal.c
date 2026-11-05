@@ -9,6 +9,7 @@
 static volatile uint32_t s_tick_ms = 0;
 
 void bms_hal_init(void) {
+#ifdef __arm__
     /* 1. Enable peripheral clocks on AHB/APB buses */
     RCC->APB2PCLKEN |= (1 << 2) | (1 << 3) | (1 << 4); /* GPIOA, GPIOB, GPIOC */
     RCC->APB1PCLKEN |= (1 << 25);                      /* CAN1 */
@@ -25,6 +26,7 @@ void bms_hal_init(void) {
     GPIOA->CRL = (GPIOA->CRL & ~0x0000000F) | 0x00000004; /* PA0 Input */
     GPIOB->CRL = (GPIOB->CRL & ~0x000000F0) | 0x00000040; /* PB1 Input */
     GPIOC->CRL = (GPIOC->CRL & ~0x00000F00) | 0x00000400; /* PC2 Input */
+#endif
 
     /* Default all power MOSFETs to OFF */
     bms_hal_set_chg_mos(false);
@@ -33,39 +35,63 @@ void bms_hal_init(void) {
 }
 
 bool bms_hal_read_acc_wake(void) {
+#ifdef __arm__
     return (GPIOA->IDR & (1 << 0)) != 0;
+#else
+    return false;
+#endif
 }
 
 bool bms_hal_read_cin_detect(void) {
+#ifdef __arm__
     return (GPIOB->IDR & (1 << 1)) != 0;
+#else
+    return false;
+#endif
 }
 
 bool bms_hal_read_din_detect(void) {
+#ifdef __arm__
     return (GPIOC->IDR & (1 << 2)) != 0;
+#else
+    return false;
+#endif
 }
 
 void bms_hal_set_chg_mos(bool enable) {
+#ifdef __arm__
     if (enable) {
         GPIOA->BSRR = (1 << 8);  /* Set PA8 High */
     } else {
         GPIOA->BRR  = (1 << 8);  /* Reset PA8 Low */
     }
+#else
+    (void)enable;
+#endif
 }
 
 void bms_hal_set_dsg_mos(bool enable) {
+#ifdef __arm__
     if (enable) {
         GPIOC->BSRR = (1 << 9);  /* Set PC9 High */
     } else {
         GPIOC->BRR  = (1 << 9);  /* Reset PC9 Low */
     }
+#else
+    (void)enable;
+#endif
 }
 
 void bms_hal_set_precharge_mos(bool enable) {
+#ifdef __arm__
     if (enable) {
         GPIOC->BSRR = (1 << 4);  /* Set PC4 High */
     } else {
         GPIOC->BRR  = (1 << 4);  /* Reset PC4 Low */
     }
+#else
+    (void)enable;
+#endif
 }
 
 /* --- Software / Hardware I2C Driver for DVC1124 on PB6 (SCL) / PB7 (SDA) --- */
@@ -94,6 +120,7 @@ bool bms_hal_i2c_read(uint8_t dev_addr, uint8_t reg_addr, uint8_t *data, uint16_
 /* --- CAN Peripheral Interface on PA11 (RX) / PA12 (TX) --- */
 
 bool bms_hal_can_transmit(uint32_t ext_id, const uint8_t *payload, uint8_t dlc) {
+#ifdef __arm__
     /* Check for an empty transmit mailbox (0, 1, or 2) */
     uint32_t tsr = CAN1->TSR;
     uint8_t mailbox = 0xFF;
@@ -119,9 +146,16 @@ bool bms_hal_can_transmit(uint32_t ext_id, const uint8_t *payload, uint8_t dlc) 
     /* Request transmission */
     CAN1->sTxMailBox[mailbox].TIR |= 1;
     return true;
+#else
+    (void)ext_id;
+    (void)payload;
+    (void)dlc;
+    return true;
+#endif
 }
 
 bool bms_hal_can_receive(uint32_t *ext_id, uint8_t *payload, uint8_t *dlc) {
+#ifdef __arm__
     if ((CAN1->RF0R & 0x03) == 0) {
         return false; /* FIFO 0 is empty */
     }
@@ -142,6 +176,12 @@ bool bms_hal_can_receive(uint32_t *ext_id, uint8_t *payload, uint8_t *dlc) {
     /* Release FIFO 0 */
     CAN1->RF0R |= (1 << 5);
     return true;
+#else
+    (void)ext_id;
+    (void)payload;
+    (void)dlc;
+    return false;
+#endif
 }
 
 uint32_t bms_hal_get_tick_ms(void) {

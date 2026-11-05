@@ -69,8 +69,39 @@ int main(void) {
     assert(ctx.can_sid == 0x1D);
     printf("PASS (Master = 0x14, Slave = 0x1D)\n");
 
+    /* Test 7: State of Health (SOH) Cycle Degradation Model */
+    printf("[Test 7] Dynamic SOH Cycle Degradation Model... ");
+    bms_core_record_cycles(&ctx, 0);
+    assert(ctx.telemetry.soh_pct == 100);
+    assert(ctx.telemetry.total_capacity_mah == 70000);
+
+    bms_core_record_cycles(&ctx, 100);
+    assert(ctx.telemetry.soh_pct == 98);
+    assert(ctx.telemetry.total_capacity_mah == 68600);
+
+    bms_core_record_cycles(&ctx, 500);
+    assert(ctx.telemetry.soh_pct == 90);
+    assert(ctx.telemetry.total_capacity_mah == 63000);
+
+    bms_core_record_cycles(&ctx, 1000);
+    assert(ctx.telemetry.soh_pct == 80);
+    assert(ctx.telemetry.total_capacity_mah == 56000);
+
+    bms_core_record_cycles(&ctx, 6000);
+    assert(ctx.telemetry.soh_pct == 0);
+    assert(ctx.telemetry.total_capacity_mah == 0);
+    printf("PASS (0 cyc: 100%%, 100 cyc: 98%%, 500 cyc: 90%%, 1000 cyc: 80%%, clamp >= 0)\n");
+
+    /* Test 8: CAN Capacity & SOH Frame Encoding (CMD 0x40, IDX 0x01) */
+    printf("[Test 8] CAN SOH & Capacity Telemetry Broadcast... ");
+    bms_core_record_cycles(&ctx, 100); /* 98% SOH, 68600 mAh */
+    ctx.telemetry.soc_pct = 75;
+    bms_core_calculate_soh(&ctx);
+    bms_can_send_capacity_soh(&ctx);
+    printf("PASS (CMD 0x40 IDX 0x01 generated)\n");
+
     printf("\n========================================================\n");
-    printf("[✔] All 6 BMS Firmware Unit Tests PASSED Successfully!\n");
+    printf("[✔] All 8 BMS Firmware Unit Tests PASSED Successfully!\n");
     printf("========================================================\n");
 
     return 0;

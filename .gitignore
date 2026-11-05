@@ -24,4 +24,8 @@ build/
 *.lock
 *.lock~
 *.user
+~*
+*.bak
+ghidra_project/**/*.bak
+ghidra_project/**/~*
 

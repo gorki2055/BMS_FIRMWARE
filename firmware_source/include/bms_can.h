@@ -44,6 +44,7 @@
 #define CAN_IDX_TEL_MOS_STATUS       0x10
 
 /* Sub-Command Indexes for CMD 0x40 */
+#define CAN_IDX_CFG_CAPACITY_SOH     0x01  /* Total capacity, Remaining capacity, SOC, SOH */
 #define CAN_IDX_CFG_RATING           0x01  /* Strings, Parallels, Design Capacity */
 #define CAN_IDX_CFG_CYCLES           0x02  /* Cycle count, Remaining time */
 
@@ -63,6 +64,7 @@ void bms_can_init(uint8_t own_sid);
 void bms_can_process_rx(const CanMessage_t *msg, BmsContext_t *ctx);
 void bms_can_transmit(const CanMessage_t *msg);
 void bms_can_send_status(const BmsContext_t *ctx);
+void bms_can_send_capacity_soh(const BmsContext_t *ctx);
 void bms_can_send_cell_voltages(const BmsContext_t *ctx);
 void bms_can_send_temperatures(const BmsContext_t *ctx);
 uint16_t bms_crc16_modbus(const uint8_t *buf, uint16_t len);

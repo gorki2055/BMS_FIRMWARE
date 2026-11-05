@@ -180,3 +180,64 @@ By emulating the Keil MDK scatter-loading routine (`__scatterload` at `0x080087F
 | **Under-Voltage Cutoff (UVC)** | `2,621` | mV (2.621 V) | Hard discharge cutoff (contactor open) |
 | **Nominal Pack Capacity** | `70` | Ah | Full battery charge capacity rating |
 
+---
+
+## 9. Power MOSFET Switching Architecture
+
+From schematic analysis and HAL disassembly, the power MOSFET switching circuitry operates through dedicated GPIO pins:
+
+- **PA8 (`CHG_EN`):** Controls the Charge Power MOSFET stage via high-side driver.
+- **PC9 (`DSG_EN`):** Controls the Discharge Power MOSFET stage.
+- **PC4 (`PRECHARGE_EN`):** Controls the current-limiting pre-charge path to prevent inrush contactor arcing.
+
+### Safety Interlocking Logic:
+- **Discharge Enable Condition:** Requires ACC ignition signal active (`PA0 == HIGH`) **AND** DIN discharge request active (`PC2 == HIGH`) with **zero** critical fault flags (`faults.all == 0`).
+- **Charge Enable Condition:** Requires CIN charger detect signal active (`PB1 == HIGH`) with no over-voltage fault (`cell_ovp == 0`).
+- **Protection Trip:** Any fault (OVP, UVP, OCP, OTP) immediately pulls PA8 and PC9 LOW through `bms_hal_set_chg_mos(false)` and `bms_hal_set_dsg_mos(false)` within 10 ms.
+
+---
+
+## 10. Dynamic State of Health (SOH) & Capacity Recalibration Engine
+
+### 10.1 Cycle-Degradation SOH Algorithm (`FUN_080207fc` @ Flash `0x080207FC`)
+The core State of Health calculation is executed in the periodic background loop (`FUN_0802302c`):
+
+```c
+void FUN_080207fc(void) {
+    float cycles = (float)*(ushort *)(0x20022344);   // Cycle counter in Retention SRAM
+    float slope  = *(float *)(0x20020A14);           // Degradation slope: 0.02f (Flash 0x08015310)
+    float soh    = 100.0f - (cycles * slope);        // Base aging degradation formula
+    if (soh < 0.0f) {
+        soh = 0.0f;
+    }
+    *(uint8_t *)(0x20020004) = (uint8_t)soh;         // Saved to SOH register in Retention SRAM
+}
+```
+
+#### Analytical Breakdown:
+- **Degradation Coefficient:** $0.02\%$ per complete cycle ($\approx 0.0002$).
+- **Fresh Battery (0 cycles):** $\text{SOH} = 100\%$.
+- **100 Cycles:** $\text{SOH} = 98\%$.
+- **500 Cycles:** $\text{SOH} = 90\%$.
+- **1,000 Cycles (Design Cycle Life):** $\text{SOH} = 80\%$ (standard EV end-of-life battery retirement threshold).
+- **Lower Clamp:** Clamped at $0\%$ using single-precision FPU instructions (`0x08020844`).
+
+### 10.2 Dynamic Capacity Recalibration (`FUN_0801b55c` & `FUN_08010654`)
+During battery operation, Coulomb integration is periodically cross-referenced against the 2D Open Circuit Voltage (OCV) vs. Temperature lookup table (`FUN_08010654`):
+1. When pack current remains quiescent ($<0.8\text{ A}$) for $>20$ consecutive sample intervals, an OCV-estimated capacity $C_{\text{est}}$ is sampled.
+2. If the integrated Coulomb counter $C_{\text{meas}}$ deviates by $>3.0\text{ Ah}$, dynamic recalibration is applied:
+   $$C_{\text{learned}} = \left(1.0 - \frac{2.0 \times (C_{\text{meas}} - C_{\text{est}})}{C_{\text{est}}}\right) \times C_{\text{est}}$$
+3. The learned Full Charge Capacity (FCC) is written back to battery-backed Retention SRAM (`0x20022334`).
+
+### 10.3 CAN Telemetry Broadcast Frame (`CMD 0x40, IDX 0x01`)
+The calculated SOH and learned capacity are broadcast onto the 250 kbps CAN bus using 29-bit extended ID `0x18400014` (Priority 6, SID 0x14, DID 0x00, CMD 0x40, Index 0x01) with DLC 7:
+
+| Byte | Field | Scaling / Unit | Description |
+| :--- | :--- | :--- | :--- |
+| **D0 - D1** | Full Charge Capacity (FCC) | $10\text{ mAh / LSB}$ (Little-Endian) | Learned total battery capacity |
+| **D2 - D3** | Remaining Capacity | $10\text{ mAh / LSB}$ (Little-Endian) | Dynamically tracked usable charge |
+| **D4** | Relative SOC | $1\% / \text{LSB}$ ($0 - 100\%$) | State of Charge relative to usable FCC |
+| **D5** | State of Health (SOH) | $1\% / \text{LSB}$ ($0 - 100\%$) | Absolute capacity health from `0x20020004` |
+| **D6** | Capacity Status Flags | Bitmask | Calibration status & valid lock indicators |
+
+

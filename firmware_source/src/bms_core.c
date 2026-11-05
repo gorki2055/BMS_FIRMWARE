@@ -93,6 +93,36 @@ void bms_core_calculate_soc(BmsContext_t *ctx) {
     }
 }
 
+/**
+ * @brief Dynamic State of Health (SOH) calculation
+ * @note Reconstructed directly from FUN_080207fc (Flash 0x080207FC):
+ *       SOH = max(0.0f, 100.0f - (cycle_count * 0.02f))
+ *       SOH register is mapped to Retention SRAM 0x20020004.
+ */
+void bms_core_calculate_soh(BmsContext_t *ctx) {
+    if (!ctx) return;
+    BmsTelemetry_t *t = &ctx->telemetry;
+
+    float soh = 100.0f - ((float)t->cycle_count * BMS_SOH_DEGRADE_PER_CYCLE);
+    if (soh < 0.0f) {
+        soh = 0.0f;
+    } else if (soh > 100.0f) {
+        soh = 100.0f;
+    }
+
+    t->soh_pct = (uint8_t)soh;
+
+    /* Dynamically adjust usable pack capacity based on degraded SOH */
+    t->total_capacity_mah = (BMS_NOMINAL_CAPACITY_MAH * (uint32_t)t->soh_pct) / 100;
+    t->remaining_mah = (t->total_capacity_mah * (uint32_t)t->soc_pct) / 100;
+}
+
+void bms_core_record_cycles(BmsContext_t *ctx, uint16_t new_cycle_count) {
+    if (!ctx) return;
+    ctx->telemetry.cycle_count = new_cycle_count;
+    bms_core_calculate_soh(ctx);
+}
+
 void bms_core_process_10ms_tick(BmsContext_t *ctx) {
     /* Read analog signals from DVC1124 AFE */
     dvc1124_read_pack_current(&ctx->telemetry.current_ma);
@@ -183,4 +213,5 @@ void bms_core_process_100ms_tick(BmsContext_t *ctx) {
 void bms_core_process_1s_tick(BmsContext_t *ctx) {
     ctx->uptime_seconds++;
     bms_core_calculate_soc(ctx);
+    bms_core_calculate_soh(ctx);
 }

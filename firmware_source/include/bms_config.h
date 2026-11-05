@@ -16,6 +16,9 @@
 #define BMS_NOMINAL_CAPACITY_AH      70        /**< Pack capacity rating: 70 Ah */
 #define BMS_NOMINAL_CAPACITY_MAH     70000     /**< Pack capacity in mAh */
 #define BMS_NTC_TEMP_SENSORS         4         /**< 4 external temperature sensors */
+#define BMS_DESIGN_CYCLES            1000      /**< Design cycle life (1000 cycles to 80% SOH) */
+#define BMS_SOH_DEGRADE_PER_CYCLE    0.02f     /**< 0.02% capacity loss per full cycle (from Flash 0x08015310) */
+#define BMS_FULL_CHG_TAPER_MA        800       /**< Full charge detection taper current (Flash 0x08020858: 0.8A) */
 
 /* ========================================================================== */
 /* Calibrated Voltage Protection Limits (in Millivolts)                       */
