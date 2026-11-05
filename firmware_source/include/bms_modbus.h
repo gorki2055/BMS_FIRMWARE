@@ -125,3 +125,4 @@ int bms_host_proto_process_frame(const uint8_t *rx_buf, uint16_t rx_len,
 #endif
 
 #endif /* BMS_MODBUS_H */
+

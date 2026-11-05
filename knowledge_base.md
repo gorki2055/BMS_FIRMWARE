@@ -434,3 +434,66 @@ Running BMS Firmware Core Unit Tests (Native Host)
 ========================================================
 ```
 
+---
+
+## 13. Vendor CAN Bootloader Flashing Compatibility & Firmware Packaging
+
+### 13.1 Can Custom Firmware Be Flashed Using the Vendor CAN Tool?
+- **Direct Answer:** **NO, not directly from a standard compiler output** (such as a standard Intel HEX `:10...` or raw binary `.bin`). The vendor tool will immediately reject it or fail verification.
+- **However: YES, it works 100%** if the compiled binary is wrapped into the vendor's proprietary container format using the verified packager [`scripts/pack_firmware_container.py`](file:///d:/kushal/projects/bms%20firmware%20reverse%20engineering/scripts/pack_firmware_container.py).
+
+### 13.2 The 6 Mandatory Technical Requirements
+
+#### 1. Memory Base Address & Vector Relocation (`0x08008000`)
+- **Bootloader Protection:** The first **32 KB (`0x08000000 – 0x08007FFF`)** of MCU Flash is permanently occupied by the factory In-Application Programming (IAP) Bootloader.
+- **Application Link Base:** Custom firmware must be linked with base Flash address `0x08008000` (e.g. in linker script `.ld` or Keil Scatter file).
+- **VTOR Relocation:** `SystemInit()` must relocate the vector table:
+  ```c
+  SCB->VTOR = 0x08008000;
+  ```
+- *Danger:* Linking at `0x08000000` will brick the bootloader and require a physical SWD debugger (J-Link / ST-Link) to recover.
+
+#### 2. Proprietary ASCII-Hex Container Structure (Not Intel HEX)
+The vendor file uses `.hex` extension purely by naming convention. Internally, it is an ASCII raw hex stream:
+- **Line 1:** 5-character ASCII Hex declared byte length:
+  $$\text{Length}_{\text{hex}} = \text{sizeof}(\text{Payload}) + 64$$
+  For a $112,448\text{-byte}$ binary, declared length is `1B780` ($112,512\text{ bytes}$).
+- **Line 2 (128 hex chars):** 64-byte Model Authentication Header.
+- **Line 3..N (128 hex chars / 64 bytes per line):** Continuous byte-for-byte binary flash payload terminated with Windows `\r\n` (CRLF).
+
+#### 3. 64-Byte Model Authentication Header & Checksum
+- **Bytes 0x00–0x27 (40 bytes ASCII):** Hardcoded hardware model ID:
+  ```text
+  SPB_BMS_ID:6495-SPB24-DVC24-006-0606-A03
+  ```
+- **Bytes 0x28–0x29 (2 bytes):** Null padding (`0x0000`).
+- **Bytes 0x2A–0x2D (4 bytes):** 32-bit arithmetic byte-sum of the entire application payload:
+  $$\text{Sum32} = \sum_{i=0}^{N-1} \text{PayloadByte}[i] \pmod{2^{32}}$$
+  Rendered as hexadecimal in Line 2 (e.g. `B2EF53`).
+- **Bytes 0x2E–0x3F (18 bytes):** Padding bytes `0xFF`.
+
+#### 4. Filename Hash Authentication (IEEE 802.3 CRC32)
+The vendor PC software checks that the 8-character token before `.hex` matches the CRC32 of the entire file:
+$$\text{Filename: } \dots\text{.DL.}\mathbf{B72E0EEC}\text{.hex} \iff \text{CRC32}(\text{File}) \equiv \mathbf{0xB72E0EEC}$$
+If the filename hash does not match the actual container bytes, the vendor tool reports *"File Corrupted"* or *"Integrity Check Failed"*.
+
+#### 5. CAN Bus Flashing Baud Rate & Arbitration
+- Flashing runs over **CAN1 at 250 kbps** (Pins PA11/PA12).
+- The bootloader listens on CAN for start-of-frame synchronization.
+- To re-enter bootloader mode from a running application without opening the physical enclosure:
+  The application must handle the software reset request (`NVIC_SystemReset()`) triggered by CAN diagnostic frame `0x5A 0xFE` (`FUN_08016460`).
+
+#### 6. Architecture & FPU Flags
+- The MCU is an **ARM Cortex-M4F** (N32G45x @ 144 MHz).
+- Single-precision hardware FPU must be initialized (`SCB->CPACR |= 0x00F00000`).
+- Stack pointer (`MSP`) must initialize to $\le \text{0x20024000}$ (144 KB SRAM boundary).
+
+### 13.3 Automated Packaging Tool
+To generate a 100% vendor-compatible `.hex` container from any compiled `.bin`:
+```powershell
+# From project root:
+python scripts/pack_firmware_container.py output/firmware_app_0x08008000.bin --version V28
+```
+This tool validates entry vectors, embeds the 64-byte model signature, calculates the arithmetic sum32, packages 64-byte lines, and appends the IEEE 802.3 CRC32 to the output filename.
+
+

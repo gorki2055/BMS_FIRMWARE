@@ -269,3 +269,4 @@ int bms_storage_read_lifetime(uint32_t *cycle_count, uint32_t *dsg_ah, uint32_t 
 
     return 0;
 }
+
