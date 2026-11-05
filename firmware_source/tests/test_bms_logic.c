@@ -100,8 +100,36 @@ int main(void) {
     bms_can_send_capacity_soh(&ctx);
     printf("PASS (CMD 0x40 IDX 0x01 generated)\n");
 
+    /* Test 9: DVC1124 AFE Register Map & ADC Conversion Physics */
+    printf("[Test 9] DVC1124 AFE Register Map & ADC Conversions... ");
+    assert(DVC1124_I2C_7BIT_ADDR == 0x20);
+    assert(DVC_REG_CELL_MODE == 0x01);
+    assert(DVC_REG_CURRENT == 0x02);
+    assert(DVC_REG_CELL_VOLTAGES == 0x1D);
+    assert(DVC_REG_BALANCING_CTRL == 0x56);
+    assert(DVC_REG_FAULT_STATUS == 0x5A);
+
+    /* Verify Cell Voltage ADC Formula (Gain: 0.1 mV/LSB, Offset: 0.5 mV) */
+    uint16_t v_nominal = dvc1124_raw_to_cell_mv(36080);
+    assert(v_nominal >= 3608 && v_nominal <= 3609);
+
+    uint16_t v_ovp = dvc1124_raw_to_cell_mv(41850);
+    assert(v_ovp >= 4185 && v_ovp <= 4186);
+
+    /* Verify Current ADC Formula (Scale: 5 mA/LSB, FUN_0800d48c) */
+    int32_t curr_dsg = dvc1124_raw_to_current_ma(200, 0);
+    assert(curr_dsg == -1000); /* 200 counts = -1000 mA discharge */
+
+    int32_t curr_chg = dvc1124_raw_to_current_ma(-7000, 0);
+    assert(curr_chg == 35000); /* -7000 counts = +35000 mA (35A) charge */
+
+    /* Verify DVC1124 Init and Balancing Configuration */
+    assert(dvc1124_init() == true);
+    assert(dvc1124_set_balancing(0x001FFFFF) == true);
+    printf("PASS (V: 0.1mV/cnt, I: 5mA/cnt, Regs: 0x01..0x56)\n");
+
     printf("\n========================================================\n");
-    printf("[✔] All 8 BMS Firmware Unit Tests PASSED Successfully!\n");
+    printf("[✔] All 9 BMS Firmware Unit Tests PASSED Successfully!\n");
     printf("========================================================\n");
 
     return 0;
