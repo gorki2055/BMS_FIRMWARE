@@ -8,6 +8,30 @@
 #include "bms_hal.h"
 #include <string.h>
 
+static DvcAfeModel_t s_afe_model = AFE_MODEL_DVC1124;
+
+void dvc1124_set_model(DvcAfeModel_t model) {
+    if (model == AFE_MODEL_DVC1114 || model == AFE_MODEL_DVC1117 || model == AFE_MODEL_DVC1124) {
+        s_afe_model = model;
+    }
+}
+
+DvcAfeModel_t dvc1124_get_model(void) {
+    return s_afe_model;
+}
+
+/**
+ * @brief Return maximum supported series cells for the active AFE chip (FUN_08013a04)
+ */
+uint8_t dvc1124_get_max_cells(void) {
+    switch (s_afe_model) {
+        case AFE_MODEL_DVC1114: return 14U;
+        case AFE_MODEL_DVC1117: return 17U;
+        case AFE_MODEL_DVC1124:
+        default:                return 24U;
+    }
+}
+
 /**
  * @brief Calculate CRC8 according to DVC1124 datasheet (poly 0x07, init 0x00)
  * Polynomial: x^8 + x^2 + x + 1 (0x07) - Reconstructed from FUN_08022fa2
@@ -132,6 +156,17 @@ bool dvc1124_read_cell_voltages(uint16_t *cell_mv, uint8_t cell_count) {
         return false;
     }
 
+    bool any_nonzero = false;
+    for (uint8_t i = 0; i < (uint8_t)(cell_count * 2); i++) {
+        if (raw_buf[i] != 0) {
+            any_nonzero = true;
+            break;
+        }
+    }
+    if (!any_nonzero) {
+        return false; /* No active hardware AFE data in host mock mode */
+    }
+
     for (uint8_t i = 0; i < cell_count; i++) {
         /* Big-endian: High byte then Low byte */
         uint16_t raw = ((uint16_t)raw_buf[i * 2] << 8) | raw_buf[i * 2 + 1];
@@ -172,6 +207,17 @@ bool dvc1124_read_temperatures(int16_t *temps_c, uint8_t count, int16_t *mos_tem
         return false;
     }
 
+    bool any_nonzero = false;
+    for (uint8_t i = 0; i < bytes_to_read; i++) {
+        if (raw[i] != 0) {
+            any_nonzero = true;
+            break;
+        }
+    }
+    if (!any_nonzero) {
+        return false; /* Preserve injected host test temperatures when mock I2C returns 0 */
+    }
+
     for (uint8_t i = 0; i < count; i++) {
         int16_t adc = (int16_t)(((uint16_t)raw[i * 2] << 8) | raw[i * 2 + 1]);
         /* Raw ADC conversion to Celsius with 40°C offset */
@@ -205,3 +251,44 @@ bool dvc1124_set_balancing(uint32_t cell_mask) {
 
     return dvc1124_write_burst(DVC_REG_BALANCING_CTRL, config_frame, sizeof(config_frame));
 }
+
+/**
+ * @brief Compute 3-phase odd/even interleaved balancing mask (reconstructed from FUN_08008af4)
+ * @note Splits active cells across 3 non-adjacent phases (every 3rd cell per phase:
+ *       Phase 0: bits 0, 3, 6, 9, 12, 15, 18, 21 (0x00249249)
+ *       Phase 1: bits 1, 4, 7, 10, 13, 16, 19, 22 (0x00492492)
+ *       Phase 2: bits 2, 5, 8, 11, 14, 17, 20, 23 (0x00924924))
+ *       Also clamps mask to the active AFE model's max cell count.
+ */
+uint32_t dvc1124_compute_interleaved_phase_mask(uint32_t full_mask, uint8_t phase) {
+    static const uint32_t k_phase_masks[3] = {
+        0x00249249UL, /* Phase 0: cells 1, 4, 7, 10, 13, 16, 19, 22 */
+        0x00492492UL, /* Phase 1: cells 2, 5, 8, 11, 14, 17, 20, 23 */
+        0x00924924UL  /* Phase 2: cells 3, 6, 9, 12, 15, 18, 21, 24 */
+    };
+    uint8_t max_cells = dvc1124_get_max_cells();
+    uint32_t model_limit_mask = (max_cells >= 24U) ? 0x00FFFFFFUL : ((1UL << max_cells) - 1UL);
+    return (full_mask & model_limit_mask) & k_phase_masks[phase % 3U];
+}
+
+/**
+ * @brief Apply 3-phase interleaved passive balancing to AFE registers 0x67, 0x68, 0x69 (FUN_08008af4)
+ */
+bool dvc1124_set_balancing_phased(uint32_t full_mask, uint8_t phase) {
+    uint32_t phased_mask = dvc1124_compute_interleaved_phase_mask(full_mask, phase);
+
+    uint8_t g1 = (uint8_t)(phased_mask & 0xFFU);
+    uint8_t g2 = (uint8_t)((phased_mask >> 8) & 0xFFU);
+    uint8_t g3 = (uint8_t)((phased_mask >> 16) & 0xFFU);
+
+    bool ok = dvc1124_write_reg(DVC_REG_BAL_PHASE_G1, g1);
+    if (s_afe_model == AFE_MODEL_DVC1124 || s_afe_model == AFE_MODEL_DVC1117 || s_afe_model == AFE_MODEL_DVC1114) {
+        ok = ok && dvc1124_write_reg(DVC_REG_BAL_PHASE_G2, g2);
+    }
+    if (s_afe_model == AFE_MODEL_DVC1124 || s_afe_model == AFE_MODEL_DVC1117) {
+        ok = ok && dvc1124_write_reg(DVC_REG_BAL_PHASE_G3, g3);
+    }
+    ok = ok && dvc1124_set_balancing(phased_mask);
+    return ok;
+}
+

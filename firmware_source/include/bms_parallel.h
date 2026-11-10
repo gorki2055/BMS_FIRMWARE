@@ -32,10 +32,18 @@ typedef struct {
     uint32_t        last_peer_heartbeat_ms;
 } BmsParallelManager_t;
 
+/* Internal Multi-Pack Parallel Bus Frame IDs (reconstructed from FUN_0801ca08 / FUN_0801f044) */
+#define BMS_PARALLEL_CAN_ID_HEARTBEAT   0x141DF001UL
+#define BMS_PARALLEL_CAN_ID_SYNC_BASE   0x00000101UL /* 0x101..0x106 Master->Slave sync */
+#define BMS_PARALLEL_CAN_ID_STATUS_BASE 0x00000201UL /* 0x201..0x203 Slave->Master status */
+
 /* Function Prototypes */
 void bms_parallel_init(BmsContext_t *ctx);
 void bms_parallel_evaluate_role(BmsContext_t *ctx, const char *local_sn, const char *peer_sn);
 void bms_parallel_process_tick(BmsContext_t *ctx);
 bool bms_parallel_request_switch(BmsContext_t *ctx, uint8_t target_pack_id);
+void bms_parallel_send_heartbeat(const BmsContext_t *ctx);
+bool bms_parallel_process_can_rx(BmsContext_t *ctx, uint32_t can_id, const uint8_t *data, uint8_t dlc);
+const BmsParallelManager_t *bms_parallel_get_manager(void);
 
 #endif /* __BMS_PARALLEL_H__ */

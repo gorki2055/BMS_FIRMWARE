@@ -13,6 +13,7 @@
 /* Battery Pack Specifications (21S 70Ah NCM - Nepal Market)                  */
 /* ========================================================================== */
 #define BMS_SERIES_CELLS             21        /**< Number of cells in series */
+#define BMS_PARALLEL_STRINGS         1         /**< Number of parallel strings per pack */
 #define BMS_NOMINAL_CAPACITY_AH      70        /**< Pack capacity rating: 70 Ah */
 #define BMS_NOMINAL_CAPACITY_MAH     70000     /**< Pack capacity in mAh */
 #define BMS_NTC_TEMP_SENSORS         4         /**< 4 external temperature sensors */
@@ -40,6 +41,9 @@
 #define BMS_MAX_PEAK_DSG_A           120       /**< Peak discharge current (schematic rating) */
 #define BMS_MAX_CHARGE_CURRENT_A     35        /**< Max charge current (0.5C) */
 #define BMS_AUX_ACC_MAX_CURRENT_A    2         /**< ACC limited auxiliary discharge */
+#define BMS_BODY_DIODE_PROTECT_MA    1500      /**< Reverse current threshold (1.5A) to promote inhibited MOSFET ON (FUN_0801f580) */
+#define BMS_PRECHARGE_TIMEOUT_TICKS  10        /**< Pre-charge max duration in 100ms ticks (FUN_0801647c: 10 ticks -> Fault 0xBE) */
+#define BMS_SELF_DSG_INTERVAL_SEC    75        /**< Self-discharge & quiescent drain interval in rest seconds (FUN_0801fc8c) */
 
 /* ========================================================================== */
 /* Temperature Protection Limits (in Celsius)                                 */

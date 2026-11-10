@@ -46,6 +46,7 @@ extern "C" {
 #define BMS_HOST_FRAME_HEADER_EB        0xEB
 #define BMS_HOST_FRAME_CMD_TELEMETRY    0xD1
 #define BMS_HOST_FRAME_CMD_CONFIG       0x01
+#define BMS_HOST_FRAME_CMD_IAP          0x7A  /* UART IAP / Calibration Command (FUN_0801cd98) */
 
 /* Modbus Register Map Offsets */
 #define MODBUS_REG_CELL1_VOLTAGE        0x0001 /* Cell 1 Voltage (mV) */
@@ -118,7 +119,16 @@ int bms_modbus_process_frame(const uint8_t *rx_buf, uint16_t rx_len,
  */
 int bms_host_proto_process_frame(const uint8_t *rx_buf, uint16_t rx_len,
                                  uint8_t *tx_buf, uint16_t tx_buf_size,
-                                 const BmsContext_t *ctx);
+                                 BmsContext_t *ctx);
+
+/**
+ * @brief Format Bluetooth BLE module AT+NAME command string (reconstructed from FUN_0800b454)
+ * @param pack_name Null-terminated pack name string
+ * @param out_buf Output character buffer
+ * @param out_size Maximum size of output buffer
+ * @return Number of bytes written (excluding null terminator), or <0 on error
+ */
+int bms_modbus_format_bt_at_name(const char *pack_name, char *out_buf, uint16_t out_size);
 
 #ifdef __cplusplus
 }

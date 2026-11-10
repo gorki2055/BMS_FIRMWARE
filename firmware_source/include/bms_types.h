@@ -14,6 +14,7 @@
 typedef enum {
     BMS_STATE_INIT = 0,
     BMS_STATE_STANDBY,
+    BMS_STATE_PRECHARGE,    /* Timed pre-charge sequence (FUN_0801647c) */
     BMS_STATE_DISCHARGE,
     BMS_STATE_CHARGE,
     BMS_STATE_BALANCING,
@@ -47,7 +48,8 @@ typedef union {
         uint32_t afe_comm_fail : 1;  /* DVC1124 I2C communication error */
         uint32_t cell_unbalance: 1;  /* Excessive voltage divergence */
         uint32_t aux_overload  : 1;  /* ACC auxiliary path current > 2A */
-        uint32_t reserved      : 17;
+        uint32_t precharge_fail: 1;  /* Pre-charge bus rise timeout (Fault 0xBE, FUN_0801647c) */
+        uint32_t reserved      : 16;
     } bits;
 } BmsFaultFlags_t;
 
@@ -74,6 +76,7 @@ typedef struct {
     int16_t  min_temp_c;
     int16_t  max_temp_c;
     int16_t  mos_temp_c;                 /* Power stage temperature */
+    int16_t  connector_temp_c;           /* Connector temperature (°C) */
 
     int32_t  current_ma;                 /* Pack current in mA (+ charge, - discharge) */
     uint32_t pack_voltage_mv;            /* Total stack voltage in mV */
@@ -82,8 +85,14 @@ typedef struct {
     uint8_t  soh_pct;                    /* State of Health (0 - 100%) */
     uint32_t remaining_mah;              /* Remaining capacity in mAh */
     uint32_t total_capacity_mah;         /* Total calibrated capacity (70000 mAh) */
+    uint32_t accum_chg_mah;              /* Cumulative charging capacity in mAh */
+    uint32_t accum_dsg_mah;              /* Cumulative discharging capacity in mAh */
 
     uint16_t cycle_count;                /* Charge/discharge cycle count */
+    uint16_t max_uncharged_hours;        /* Longest uncharged interval in hours */
+    uint16_t recent_uncharged_hours;     /* Most recent uncharged interval in hours */
+    uint16_t est_chg_time_min;           /* Estimated remaining charge time in minutes */
+    uint16_t idle_hours;                 /* Pack idle duration in hours */
     uint32_t balance_mask;               /* Bitmask of active balancing cells (bits 0..20) */
 } BmsTelemetry_t;
 
@@ -116,6 +125,16 @@ typedef struct {
     BmsLimits_t       limits;             /* Runtime / EEPROM protection limits */
     BmsSocEstimator_t soc_est;            /* Hybrid Coulomb-Counting / 2D OCV estimator */
     uint32_t          uptime_seconds;
+    bool              can_silent;           /* True when silenced by CMD 0x1F/0x1F "SILENCE" */
+    bool              door_lock_prohibit_dsg; /* Electric door lock discharge prohibit (CMD 0x14/0x05) */
+    bool              ota_update_requested; /* True when CMD 0x1A/0x00 "UPDATE" received */
+    uint8_t           active_power_battery; /* 0x01 = Bat1 (Master), 0x02 = Bat2 (Slave) */
+    uint8_t           parallel_switch_status; /* Parallel linkage status (0=Idle, 1=Searching, 2=Found, 3=Success) */
+    uint8_t           precharge_ticks;      /* Elapsed 100ms ticks in BMS_STATE_PRECHARGE (FUN_0801647c) */
+    bool              precharge_bus_ready;  /* True when load bus capacitor voltage has risen */
+    uint8_t           balance_phase;        /* Current 3-phase interleaved balancing phase (0..2, FUN_08008af4) */
+    bool              calibration_authorized; /* True when MCU 96-bit UID + EEPROM 0x0100 lock matches (FUN_08017b3c) */
+    float             cell_cal_gain[BMS_SERIES_CELLS]; /* Per-cell voltage gain multipliers (FUN_08016000) */
     char              serial_number[32];
 } BmsContext_t;
 

@@ -59,14 +59,31 @@
 #define DVC1124_CURRENT_SCALE_MA_PER_LSB 5.0f   /**< Flash 0x0800D52C: 0.005A = 5 mA / count */
 #define DVC1124_TEMP_OFFSET_DEG_C        40     /**< Temperature decoding offset (+40°C in CAN / -40°C raw) */
 
+/* Multi-AFE Chip Family Identifiers (Reconstructed from FUN_08008af4 / FUN_08013a04) */
+typedef enum {
+    AFE_MODEL_DVC1114 = 0x045A, /**< Devechip DVC1114 (up to 14S) */
+    AFE_MODEL_DVC1117 = 0x045D, /**< Devechip DVC1117 (up to 17S) */
+    AFE_MODEL_DVC1124 = 0x0464  /**< Devechip DVC1124 (up to 24S) */
+} DvcAfeModel_t;
+
+/* 3-Phase Interleaved Balancing Registers (FUN_08008af4) */
+#define DVC_REG_BAL_PHASE_G1             0x67  /**< Balancing group 1 register (Cells 1..8) */
+#define DVC_REG_BAL_PHASE_G2             0x68  /**< Balancing group 2 register (Cells 9..16) */
+#define DVC_REG_BAL_PHASE_G3             0x69  /**< Balancing group 3 register (Cells 17..24) */
+
 /* ========================================================================== */
 /* Driver Function Prototypes                                                 */
 /* ========================================================================== */
 bool dvc1124_init(void);
+void dvc1124_set_model(DvcAfeModel_t model);
+DvcAfeModel_t dvc1124_get_model(void);
+uint8_t dvc1124_get_max_cells(void);
 bool dvc1124_read_cell_voltages(uint16_t *cell_mv, uint8_t cell_count);
 bool dvc1124_read_pack_current(int32_t *current_ma);
 bool dvc1124_read_temperatures(int16_t *temps_c, uint8_t count, int16_t *mos_temp);
 bool dvc1124_set_balancing(uint32_t cell_mask);
+uint32_t dvc1124_compute_interleaved_phase_mask(uint32_t full_mask, uint8_t phase);
+bool dvc1124_set_balancing_phased(uint32_t full_mask, uint8_t phase);
 bool dvc1124_write_reg(uint8_t reg, uint8_t val);
 bool dvc1124_read_reg(uint8_t reg, uint8_t *val);
 bool dvc1124_read_burst(uint8_t reg, uint8_t *buf, uint8_t len);

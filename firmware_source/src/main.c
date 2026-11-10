@@ -37,18 +37,18 @@ int main(void) {
             bms_core_process_10ms_tick(&g_bms_ctx);
         }
 
-        /* Standard 100ms task: cell voltage polling, temperatures, state machine */
+        /* Standard 100ms task: cell voltage polling, temperatures, state machine, CAN periodic scheduler */
         if ((now - last_100ms) >= 100) {
             last_100ms = now;
             bms_core_process_100ms_tick(&g_bms_ctx);
             bms_parallel_process_tick(&g_bms_ctx);
+            bms_can_periodic_step(&g_bms_ctx, 100);
         }
 
-        /* Low-speed 1000ms task: SOC integration, telemetry broadcast, uptime */
+        /* Low-speed 1000ms task: SOC integration, SOH update, uptime */
         if ((now - last_1000ms) >= 1000) {
             last_1000ms = now;
             bms_core_process_1s_tick(&g_bms_ctx);
-            bms_can_send_status(&g_bms_ctx);
         }
 
         /* Event-driven CAN reception */

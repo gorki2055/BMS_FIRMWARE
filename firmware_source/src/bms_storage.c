@@ -6,11 +6,29 @@
  */
 
 #include "bms_storage.h"
+#include "bms_hal.h"
 #include <string.h>
 
 #define SIMULATED_EEPROM_SIZE 4096
 static uint8_t s_eeprom_storage[SIMULATED_EEPROM_SIZE];
 static bool s_storage_initialized = false;
+static BmsStorageMedium_t s_storage_medium = BMS_STORAGE_MEDIUM_EEPROM;
+static uint8_t s_fault_log_write_idx = 0;
+static const uint16_t k_fault_log_addrs[BMS_FAULT_LOG_SLOTS] = {
+    EEPROM_ADDR_FAULT_LOG_1,
+    EEPROM_ADDR_FAULT_LOG_2,
+    EEPROM_ADDR_FAULT_LOG_3
+};
+
+void bms_storage_set_medium(BmsStorageMedium_t medium)
+{
+    s_storage_medium = medium;
+}
+
+BmsStorageMedium_t bms_storage_get_medium(void)
+{
+    return s_storage_medium;
+}
 
 /**
  * @brief Calculate block 8-bit checksum (reconstructed from FUN_0800ba48)
@@ -88,7 +106,17 @@ void bms_storage_init(void)
     memcpy(&s_eeprom_storage[EEPROM_ADDR_CYCLE_COUNT], &zero32, 4);
     memcpy(&s_eeprom_storage[EEPROM_ADDR_OPERATING_HOURS], &zero32, 4);
 
+    /* Initialize Default Per-Cell Calibration Multipliers (10000 = 1.0000f) at 0x0060..0x0089 */
+    for (uint8_t c = 0; c < BMS_SERIES_CELLS; c++) {
+        uint16_t unity_cal = 10000U;
+        s_eeprom_storage[EEPROM_ADDR_CELL_CAL_1_16 + (c * 2U)]      = (uint8_t)(unity_cal & 0xFFU);
+        s_eeprom_storage[EEPROM_ADDR_CELL_CAL_1_16 + (c * 2U) + 1U] = (uint8_t)((unity_cal >> 8) & 0xFFU);
+    }
+
     s_storage_initialized = true;
+
+    /* Compute and write initial MCU 96-bit UID lock word at EEPROM 0x0100 */
+    (void)bms_storage_write_uid_lock();
 }
 
 /**
@@ -104,6 +132,9 @@ int bms_storage_read_block(uint16_t addr, uint8_t *dest, uint16_t len)
     }
 
     bms_storage_init();
+    if (s_storage_medium == BMS_STORAGE_MEDIUM_FLASH) {
+        return bms_hal_flash_read(addr, dest, len) ? 0 : -3;
+    }
     memcpy(dest, &s_eeprom_storage[addr], len);
     return 0;
 }
@@ -125,6 +156,10 @@ int bms_storage_write_verified(uint16_t addr, const uint8_t *src, uint16_t len)
     }
 
     bms_storage_init();
+
+    if (s_storage_medium == BMS_STORAGE_MEDIUM_FLASH) {
+        return bms_hal_flash_write(addr, src, len) ? 0 : -3;
+    }
 
     uint16_t bytes_written = 0;
     while (bytes_written < len) {
@@ -269,4 +304,191 @@ int bms_storage_read_lifetime(uint32_t *cycle_count, uint32_t *dsg_ah, uint32_t 
 
     return 0;
 }
+
+/**
+ * @brief Compute 16-bit hardware-bound checksum across EEPROM cell calibration + 96-bit MCU UID
+ * @note Reconstructed from FUN_08017b04 / FUN_08017b3c (Flash 0x08017B04)
+ */
+uint16_t bms_storage_calc_uid_lock_crc(const uint8_t *cal_bytes, uint16_t cal_len, const uint8_t uid[12])
+{
+    uint16_t hash = 0x5A5AU;
+    if (cal_bytes) {
+        for (uint16_t i = 0; i < cal_len; i++) {
+            hash = (uint16_t)((hash << 5) + hash + cal_bytes[i]);
+        }
+    }
+    if (uid) {
+        for (uint8_t j = 0; j < 12U; j++) {
+            hash = (uint16_t)((hash << 5) + hash + uid[j]);
+        }
+    }
+    return hash;
+}
+
+/**
+ * @brief Write hardware-bound UID + calibration lock word to EEPROM 0x0100 (FUN_08017b3c)
+ */
+int bms_storage_write_uid_lock(void)
+{
+    bms_storage_init();
+    uint8_t cal_bytes[EEPROM_LEN_CELL_CAL_TOTAL];
+    uint8_t uid[12];
+
+    if (bms_storage_read_block(EEPROM_ADDR_CELL_CAL_1_16, cal_bytes, EEPROM_LEN_CELL_CAL_TOTAL) != 0) {
+        return -1;
+    }
+    bms_hal_read_mcu_uid(uid);
+
+    uint16_t lock_word = bms_storage_calc_uid_lock_crc(cal_bytes, EEPROM_LEN_CELL_CAL_TOTAL, uid);
+    uint8_t lock_buf[2] = { (uint8_t)(lock_word & 0xFFU), (uint8_t)((lock_word >> 8) & 0xFFU) };
+    return bms_storage_write_verified(EEPROM_ADDR_UID_LOCK, lock_buf, 2);
+}
+
+/**
+ * @brief Verify EEPROM 0x0100 lock word against current MCU 96-bit UID & calibration table (FUN_08017b3c)
+ */
+bool bms_storage_verify_uid_lock(BmsContext_t *ctx)
+{
+    bms_storage_init();
+    uint8_t cal_bytes[EEPROM_LEN_CELL_CAL_TOTAL];
+    uint8_t uid[12];
+    uint8_t lock_buf[2] = {0};
+
+    if (bms_storage_read_block(EEPROM_ADDR_CELL_CAL_1_16, cal_bytes, EEPROM_LEN_CELL_CAL_TOTAL) != 0) {
+        if (ctx) ctx->calibration_authorized = false;
+        return false;
+    }
+    if (bms_storage_read_block(EEPROM_ADDR_UID_LOCK, lock_buf, 2) != 0) {
+        if (ctx) ctx->calibration_authorized = false;
+        return false;
+    }
+
+    bms_hal_read_mcu_uid(uid);
+    uint16_t expected = bms_storage_calc_uid_lock_crc(cal_bytes, EEPROM_LEN_CELL_CAL_TOTAL, uid);
+    uint16_t stored   = (uint16_t)lock_buf[0] | ((uint16_t)lock_buf[1] << 8);
+    bool match = (expected == stored);
+
+    if (ctx) {
+        ctx->calibration_authorized = match;
+    }
+    return match;
+}
+
+/**
+ * @brief Save per-cell 16-bit calibration multipliers to EEPROM 0x0060 and re-lock UID (FUN_08016000)
+ */
+int bms_storage_save_cell_cal(const uint16_t gain_milli[BMS_SERIES_CELLS])
+{
+    if (!gain_milli) return -1;
+    uint8_t raw[EEPROM_LEN_CELL_CAL_TOTAL];
+    for (uint8_t i = 0; i < BMS_SERIES_CELLS; i++) {
+        raw[i * 2U]      = (uint8_t)(gain_milli[i] & 0xFFU);
+        raw[i * 2U + 1U] = (uint8_t)((gain_milli[i] >> 8) & 0xFFU);
+    }
+    int res = bms_storage_write_verified(EEPROM_ADDR_CELL_CAL_1_16, raw, EEPROM_LEN_CELL_CAL_TOTAL);
+    if (res == 0) {
+        res = bms_storage_write_uid_lock();
+    }
+    return res;
+}
+
+/**
+ * @brief Load per-cell voltage gain multipliers from EEPROM 0x0060 (FUN_08016000)
+ * @note Divides each 16-bit word by 10000.0f; clamps out-of-range values (<0.80f or >1.20f) to 1.0f.
+ */
+int bms_storage_load_cell_cal(float gain_out[BMS_SERIES_CELLS])
+{
+    if (!gain_out) return -1;
+    uint8_t raw[EEPROM_LEN_CELL_CAL_TOTAL];
+    if (bms_storage_read_block(EEPROM_ADDR_CELL_CAL_1_16, raw, EEPROM_LEN_CELL_CAL_TOTAL) != 0) {
+        for (uint8_t i = 0; i < BMS_SERIES_CELLS; i++) gain_out[i] = 1.0f;
+        return -1;
+    }
+
+    for (uint8_t i = 0; i < BMS_SERIES_CELLS; i++) {
+        uint16_t word = (uint16_t)raw[i * 2U] | ((uint16_t)raw[i * 2U + 1U] << 8);
+        float g = (float)word / BMS_CELL_CAL_REF_DIVISOR;
+        if (g < 0.80f || g > 1.20f) {
+            g = 1.0f; /* Fallback to 1.0f (0x3F800000) per FUN_08016000 */
+        }
+        gain_out[i] = g;
+    }
+    return 0;
+}
+
+/**
+ * @brief Write 4-byte bootloader IAP upgrade flag at on-chip Flash offset 0x28A (FUN_0800f850)
+ */
+int bms_storage_write_boot_iap_flag(uint32_t magic)
+{
+    uint8_t buf[4] = {
+        (uint8_t)(magic & 0xFFU),
+        (uint8_t)((magic >> 8) & 0xFFU),
+        (uint8_t)((magic >> 16) & 0xFFU),
+        (uint8_t)((magic >> 24) & 0xFFU)
+    };
+    return bms_hal_flash_write(BMS_FLASH_BOOT_IAP_OFFSET, buf, 4U) ? 0 : -1;
+}
+
+/**
+ * @brief Read 4-byte bootloader IAP upgrade flag from on-chip Flash offset 0x28A
+ */
+int bms_storage_read_boot_iap_flag(uint32_t *magic_out)
+{
+    if (!magic_out) return -1;
+    uint8_t buf[4] = {0};
+    if (!bms_hal_flash_read(BMS_FLASH_BOOT_IAP_OFFSET, buf, 4U)) return -1;
+    *magic_out = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
+                 ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+    return 0;
+}
+
+/**
+ * @brief Record black-box fault/event snapshot at EEPROM 0x01A8..0x01E0 (FUN_08019844)
+ * @note Rotates across the 3 historical fault log slots (0x01A8, 0x01C0, 0x01E0) and mirrors the latest to slot 0.
+ */
+int bms_storage_log_event(uint8_t event_code, const BmsContext_t *ctx)
+{
+    if (!ctx) return -1;
+    BmsFaultSnapshot_t snap;
+    memset(&snap, 0, sizeof(snap));
+
+    snap.event_code      = event_code;
+    snap.soc_pct         = ctx->telemetry.soc_pct;
+    snap.min_cell_mv     = ctx->telemetry.min_cell_mv;
+    snap.max_cell_mv     = ctx->telemetry.max_cell_mv;
+    snap.max_temp_c      = ctx->telemetry.max_temp_c;
+    snap.uptime_sec      = ctx->uptime_seconds;
+    snap.pack_voltage_mv = ctx->telemetry.pack_voltage_mv;
+    snap.current_ma      = ctx->telemetry.current_ma;
+    snap.fault_flags     = ctx->faults.all;
+
+    uint16_t slot_addr = k_fault_log_addrs[s_fault_log_write_idx % BMS_FAULT_LOG_SLOTS];
+    s_fault_log_write_idx = (uint8_t)((s_fault_log_write_idx + 1U) % BMS_FAULT_LOG_SLOTS);
+
+    int res = bms_storage_write_verified(slot_addr, (const uint8_t *)&snap, sizeof(BmsFaultSnapshot_t));
+    if (slot_addr != EEPROM_ADDR_FAULT_LOG_1) {
+        (void)bms_storage_write_verified(EEPROM_ADDR_FAULT_LOG_1, (const uint8_t *)&snap, sizeof(BmsFaultSnapshot_t));
+    }
+    return res;
+}
+
+/**
+ * @brief Retrieve most recent black-box fault/event snapshot from EEPROM 0x01A8
+ */
+int bms_storage_read_last_event(BmsFaultSnapshot_t *out)
+{
+    if (!out) return -1;
+    return bms_storage_read_block(EEPROM_ADDR_FAULT_LOG_1, (uint8_t *)out, sizeof(BmsFaultSnapshot_t));
+}
+
+/**
+ * @brief Retrieve black-box fault/event snapshot from specific historical slot (0..2)
+ */
+int bms_storage_read_event_slot(uint8_t slot_idx, BmsFaultSnapshot_t *out)
+{
+    if (!out || slot_idx >= BMS_FAULT_LOG_SLOTS) return -1;
+    return bms_storage_read_block(k_fault_log_addrs[slot_idx], (uint8_t *)out, sizeof(BmsFaultSnapshot_t));
+}
+
 

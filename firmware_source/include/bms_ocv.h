@@ -64,5 +64,12 @@ float bms_ocv_get_capacity_derate(uint8_t soc_pct, int16_t temp_c);
  */
 float bms_ocv_get_thermal_derate(uint8_t soc_pct, int16_t temp_c);
 
+/**
+ * @brief Apply parasitic BMS quiescent drain + temperature-dependent self-discharge (FUN_0801fc8c)
+ * @param ctx BMS context
+ * @return Deducted capacity in mAh
+ */
+uint32_t bms_ocv_apply_self_discharge(BmsContext_t *ctx);
+
 #endif /* __BMS_OCV_H__ */
 

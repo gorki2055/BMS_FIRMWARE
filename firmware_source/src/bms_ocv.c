@@ -303,3 +303,32 @@ void bms_soc_estimator_update(BmsContext_t *ctx, uint32_t delta_ms) {
     }
 }
 
+/**
+ * @brief Apply parasitic BMS board quiescent drain + temperature-dependent cell self-discharge
+ * @note Reconstructed from FUN_0801fc8c (Flash 0x0801FC8C):
+ *       Executed every 75 rest intervals:
+ *       loss_mah = (bms_quiescent_mah + self_dsg_rate * total_capacity_mah) / 12
+ */
+uint32_t bms_ocv_apply_self_discharge(BmsContext_t *ctx) {
+    if (!ctx) return 0;
+    BmsTelemetry_t *t = &ctx->telemetry;
+
+    /* Base BMS quiescent current (~15 mA) + temperature-dependent cell self-discharge factor */
+    float temp_factor = (t->max_temp_c > 35) ? 0.0004f : 0.0002f;
+    float loss_f = (15.0f + (temp_factor * (float)t->total_capacity_mah)) / 12.0f;
+    uint32_t loss_mah = (uint32_t)(loss_f + 0.5f);
+    if (loss_mah == 0U) loss_mah = 1U;
+
+    if (t->remaining_mah >= loss_mah) {
+        t->remaining_mah -= loss_mah;
+    } else {
+        t->remaining_mah = 0U;
+    }
+
+    if (t->total_capacity_mah > 0U) {
+        t->soc_pct = (uint8_t)((t->remaining_mah * 100U) / t->total_capacity_mah);
+    }
+    return loss_mah;
+}
+
+

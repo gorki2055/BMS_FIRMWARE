@@ -6,7 +6,9 @@
  */
 
 #include "bms_modbus.h"
+#include "bms_storage.h"
 #include <string.h>
+#include <stdio.h>
 
 static uint8_t s_slave_id = BMS_MODBUS_DEFAULT_SLAVE_ID;
 static uint32_t s_baud_rate = BMS_MODBUS_DEFAULT_BAUDRATE;
@@ -336,7 +338,7 @@ int bms_modbus_process_frame(const uint8_t *rx_buf, uint16_t rx_len,
  */
 int bms_host_proto_process_frame(const uint8_t *rx_buf, uint16_t rx_len,
                                  uint8_t *tx_buf, uint16_t tx_buf_size,
-                                 const BmsContext_t *ctx)
+                                 BmsContext_t *ctx)
 {
     if (rx_buf == NULL || tx_buf == NULL || ctx == NULL || rx_len < 4) {
         return -1;
@@ -345,6 +347,24 @@ int bms_host_proto_process_frame(const uint8_t *rx_buf, uint16_t rx_len,
     /* Check Header 0xEA 0xD1 or 0xEB 0x01 */
     if (rx_buf[0] != BMS_HOST_FRAME_HEADER_EA && rx_buf[0] != BMS_HOST_FRAME_HEADER_EB) {
         return 0; /* Not a proprietary diagnostic frame */
+    }
+
+    /* UART IAP Bootloader Upgrade / Calibration Command (Header 0xEA/0xEB, Cmd 0x7A, FUN_0801cd98) */
+    if (rx_buf[1] == BMS_HOST_FRAME_CMD_IAP || (rx_len >= 6 && rx_buf[5] == BMS_HOST_FRAME_CMD_IAP)) {
+        if (tx_buf_size < 6) {
+            return -1;
+        }
+        ctx->ota_update_requested = true;
+        (void)bms_storage_write_boot_iap_flag(BMS_BOOT_IAP_MAGIC);
+        (void)bms_storage_log_event(BMS_EVENT_UART_IAP, ctx);
+
+        tx_buf[0] = rx_buf[0];
+        tx_buf[1] = BMS_HOST_FRAME_CMD_IAP;
+        tx_buf[2] = s_slave_id;
+        tx_buf[3] = 0x04;
+        tx_buf[4] = 0x00; /* ACK status = 0x00 (Success) */
+        tx_buf[5] = (uint8_t)(tx_buf[3] ^ tx_buf[4]);
+        return 6;
     }
 
     /* Telemetry Polling Frame (Header 0xEA, Command 0xD1, Subcmd 0x03) */
@@ -421,4 +441,20 @@ int bms_host_proto_process_frame(const uint8_t *rx_buf, uint16_t rx_len,
     }
 
     return 0;
+}
+
+/**
+ * @brief Format Bluetooth BLE module AT+NAME command string (reconstructed from FUN_0800b454)
+ * @note Formats "AT+NAME <pack_name>\r\n" for UART BLE module initialization.
+ */
+int bms_modbus_format_bt_at_name(const char *pack_name, char *out_buf, uint16_t out_size)
+{
+    if (pack_name == NULL || out_buf == NULL || out_size < 12) {
+        return -1;
+    }
+    int n = snprintf(out_buf, out_size, "AT+NAME %s\r\n", pack_name);
+    if (n < 0 || (uint16_t)n >= out_size) {
+        return -1;
+    }
+    return n;
 }

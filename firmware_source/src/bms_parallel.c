@@ -83,3 +83,47 @@ bool bms_parallel_request_switch(BmsContext_t *ctx, uint8_t target_pack_id) {
     s_parallel_mgr.active_pack_id = target_pack_id;
     return true;
 }
+
+/**
+ * @brief Transmit internal parallel-bus heartbeat frame (0x141DF001, FUN_0801f044)
+ */
+void bms_parallel_send_heartbeat(const BmsContext_t *ctx) {
+    if (!ctx) return;
+    CanMessage_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.id  = BMS_PARALLEL_CAN_ID_HEARTBEAT;
+    msg.dlc = 8;
+    msg.data[0] = ctx->can_sid;
+    msg.data[1] = ctx->telemetry.soc_pct;
+    uint16_t pack_0_1v = (uint16_t)(ctx->telemetry.pack_voltage_mv / 100U);
+    msg.data[2] = (uint8_t)(pack_0_1v & 0xFFU);
+    msg.data[3] = (uint8_t)((pack_0_1v >> 8) & 0xFFU);
+    msg.data[4] = ctx->faults.bits.cell_uvp ? 1U : 0U;
+    msg.data[5] = (uint8_t)ctx->role;
+    bms_can_transmit(&msg);
+}
+
+/**
+ * @brief Process internal parallel-bus CAN frame (0x141DF001, 0x101..0x106, 0x201..0x203, FUN_0801ca08)
+ */
+bool bms_parallel_process_can_rx(BmsContext_t *ctx, uint32_t can_id, const uint8_t *data, uint8_t dlc) {
+    if (!ctx || !data || dlc < 4) return false;
+
+    if (can_id == BMS_PARALLEL_CAN_ID_HEARTBEAT ||
+        (can_id >= BMS_PARALLEL_CAN_ID_SYNC_BASE && can_id <= (BMS_PARALLEL_CAN_ID_SYNC_BASE + 5U)) ||
+        (can_id >= BMS_PARALLEL_CAN_ID_STATUS_BASE && can_id <= (BMS_PARALLEL_CAN_ID_STATUS_BASE + 2U))) {
+        s_parallel_mgr.peer_connected       = true;
+        s_parallel_mgr.peer_soc_pct         = data[1];
+        s_parallel_mgr.peer_pack_voltage_mv = (uint32_t)((uint16_t)data[2] | ((uint16_t)data[3] << 8)) * 100UL;
+        if (dlc >= 5) {
+            s_parallel_mgr.peer_in_uvp = (data[4] != 0U);
+        }
+        s_parallel_mgr.last_peer_heartbeat_ms = ctx->uptime_seconds * 1000UL;
+        return true;
+    }
+    return false;
+}
+
+const BmsParallelManager_t *bms_parallel_get_manager(void) {
+    return &s_parallel_mgr;
+}

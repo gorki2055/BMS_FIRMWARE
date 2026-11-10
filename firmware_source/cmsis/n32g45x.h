@@ -38,6 +38,7 @@ extern "C" {
 #define I2C1_BASE             (APB1PERIPH_BASE + 0x5400)
 #define I2C2_BASE             (APB1PERIPH_BASE + 0x5800)
 #define CAN1_BASE             (APB1PERIPH_BASE + 0x6400)
+#define BKP_BASE              (APB1PERIPH_BASE + 0x6C00)
 #define PWR_BASE              (APB1PERIPH_BASE + 0x7000)
 
 /* APB2 Peripherals */
@@ -47,17 +48,22 @@ extern "C" {
 #define GPIOB_BASE            (APB2PERIPH_BASE + 0x0C00)
 #define GPIOC_BASE            (APB2PERIPH_BASE + 0x1000)
 #define GPIOD_BASE            (APB2PERIPH_BASE + 0x1400)
-#define ADC1_BASE             (APB2PERIPH_BASE + 0x2400)
-#define ADC2_BASE             (APB2PERIPH_BASE + 0x2800)
+#define GPIOE_BASE            (APB2PERIPH_BASE + 0x1800)
 #define TIM1_BASE             (APB2PERIPH_BASE + 0x2C00)
 #define SPI1_BASE             (APB2PERIPH_BASE + 0x3000)
 #define USART1_BASE           (APB2PERIPH_BASE + 0x3800)
+#define UART6_BASE            (APB2PERIPH_BASE + 0x5000)
+#define UART7_BASE            (APB2PERIPH_BASE + 0x5400)
 
 /* AHB Peripherals */
 #define DMA1_BASE             (AHBPERIPH_BASE + 0x0000)
 #define DMA2_BASE             (AHBPERIPH_BASE + 0x0400)
+#define ADC1_BASE             (AHBPERIPH_BASE + 0x0800)
+#define ADC2_BASE             (AHBPERIPH_BASE + 0x0C00)
 #define RCC_BASE              (AHBPERIPH_BASE + 0x1000)
 #define FLASH_R_BASE          (AHBPERIPH_BASE + 0x2000)
+#define ADC3_BASE             (AHBPERIPH_BASE + 0x2400)
+#define ADC4_BASE             (AHBPERIPH_BASE + 0x2800)
 #define CRC_BASE              (AHBPERIPH_BASE + 0x3000)
 
 /* --- GPIO Struct --- */
@@ -154,16 +160,58 @@ typedef struct {
     volatile uint32_t GTPR;
 } USART_TypeDef;
 
+/* --- Flash Memory Controller (FMC) Struct (0x40022000) --- */
+typedef struct {
+    volatile uint32_t AC;
+    volatile uint32_t KEY;
+    volatile uint32_t OPTKEY;
+    volatile uint32_t STS;
+    volatile uint32_t CTRL;
+    volatile uint32_t ADD;
+    volatile uint32_t RESERVED;
+    volatile uint32_t OB;
+    volatile uint32_t WRP;
+} FMC_TypeDef;
+
+/* --- Power Control (PWR) Struct (0x40007000) --- */
+typedef struct {
+    volatile uint32_t CTRL;
+    volatile uint32_t CTRLSTS;
+} PWR_TypeDef;
+
+/* --- Real-Time Clock (RTC) Struct (0x40002800) --- */
+typedef struct {
+    volatile uint32_t CTRLH;
+    volatile uint32_t CTRLL;
+    volatile uint32_t PRLH;
+    volatile uint32_t PRLL;
+    volatile uint32_t DIVH;
+    volatile uint32_t DIVL;
+    volatile uint32_t CNTH;
+    volatile uint32_t CNTL;
+    volatile uint32_t ALRMH;
+    volatile uint32_t ALRML;
+} RTC_TypeDef;
+
 /* Peripheral Declarations */
 #define GPIOA                 ((GPIO_TypeDef *)GPIOA_BASE)
 #define GPIOB                 ((GPIO_TypeDef *)GPIOB_BASE)
 #define GPIOC                 ((GPIO_TypeDef *)GPIOC_BASE)
 #define GPIOD                 ((GPIO_TypeDef *)GPIOD_BASE)
+#define GPIOE                 ((GPIO_TypeDef *)GPIOE_BASE)
 #define RCC                   ((RCC_TypeDef *)RCC_BASE)
+#define FMC                   ((FMC_TypeDef *)FLASH_R_BASE)
+#define PWR                   ((PWR_TypeDef *)PWR_BASE)
+#define RTC                   ((RTC_TypeDef *)RTC_BASE)
 #define CAN1                  ((CAN_TypeDef *)CAN1_BASE)
 #define I2C1                  ((I2C_TypeDef *)I2C1_BASE)
 #define USART1                ((USART_TypeDef *)USART1_BASE)
 #define USART2                ((USART_TypeDef *)USART2_BASE)
+#define USART3                ((USART_TypeDef *)USART3_BASE)
+#define UART4                 ((USART_TypeDef *)UART4_BASE)
+#define UART5                 ((USART_TypeDef *)UART5_BASE)
+#define UART6                 ((USART_TypeDef *)UART6_BASE)
+#define UART7                 ((USART_TypeDef *)UART7_BASE)
 
 #ifdef __cplusplus
 }
