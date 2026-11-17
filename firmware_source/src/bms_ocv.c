@@ -40,11 +40,12 @@ static const uint16_t s_ncm_ocv_table_mv[BMS_OCV_SOC_POINTS] = {
 };
 
 /* ========================================================================== */
-/* Table 1: Chemical Capacity Availability Derating Matrix (21 x 12)          */
+/* Table 1: Chemical Capacity Availability / Discharge C-Rate Matrix (21 x 12)*/
 /* Extracted from Scatterload Decompression (SRAM 0x20020572, FUN_08010654)    */
 /* Rows: SOC [100% down to 0% in 5% steps]                                    */
 /* Cols: Temp [<-20, -10, 0, 10, 15, 25, 40, 45, 50, 55, 60, >=60 °C]        */
-/* Unit: 0.1 Ah (scaled by 0.1 in FUN_08010654)                              */
+/* Scale: 0.1 C-rate multiplier (0.0 C - 2.0 C); FUN_08010654 multiplies by   */
+/*        Pack_Ah, clamps to (DSG_OCP_A - 1), and sends on CAN 0x141F1001 D6. */
 /* ========================================================================== */
 static const uint8_t s_capacity_avail_matrix_21x12[BMS_OCV_SOC_POINTS][BMS_OCV_TEMP_BANDS_AVAIL] = {
     /* 100% */ { 0,  5,  5,  7, 15, 20, 20, 20, 15, 10,  5,  0 },
@@ -71,11 +72,13 @@ static const uint8_t s_capacity_avail_matrix_21x12[BMS_OCV_SOC_POINTS][BMS_OCV_T
 };
 
 /* ========================================================================== */
-/* Table 2: Thermal Voltage Relaxation Derating Matrix (21 x 13)              */
+/* Table 2: Dynamic Charge Current C-Rate / Taper Matrix (21 x 13)            */
 /* Extracted from Scatterload Decompression (SRAM 0x20020720, FUN_080103c8)    */
 /* Rows: SOC [100% down to 0% in 5% steps]                                    */
 /* Cols: Temp [<0, 5, 10, 15, 20, 25, 30, 35, 40, 44, 46, 51, >=51 °C]       */
-/* Scale: 0.01 in FUN_080103c8                                               */
+/* Scale: 0.01 C-rate multiplier (0.00 C - 0.50 C); FUN_080103c8 multiplies   */
+/*        by Pack_Ah, clamps to (CHG_OCP_A - 1), and FUN_0801a848 sends it    */
+/*        to the charger via CAN 0x1806E5F4 (0 A at 100% SOC, <0°C, >=51°C).  */
 /* ========================================================================== */
 static const uint8_t s_thermal_relax_matrix_21x13[BMS_OCV_SOC_POINTS][BMS_OCV_TEMP_BANDS_THERMAL] = {
     /* 100% */ { 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 },
@@ -153,7 +156,7 @@ float bms_ocv_get_capacity_derate(uint8_t soc_pct, int16_t temp_c) {
     uint8_t row = get_soc_row(soc_pct);
     uint8_t col = get_temp_col_avail(temp_c);
     uint8_t raw_val = s_capacity_avail_matrix_21x12[row][col];
-    /* FUN_08010654 scales entry by 0.1 (0.1 Ah units) */
+    /* FUN_08010654 scales by 0.1 (0.0-2.0 C discharge C-rate multiplier) */
     return (float)raw_val * 0.1f;
 }
 
@@ -161,7 +164,7 @@ float bms_ocv_get_thermal_derate(uint8_t soc_pct, int16_t temp_c) {
     uint8_t row = get_soc_row(soc_pct);
     uint8_t col = get_temp_col_thermal(temp_c);
     uint8_t raw_val = s_thermal_relax_matrix_21x13[row][col];
-    /* FUN_080103c8 scales entry by 0.01 */
+    /* FUN_080103c8 scales by 0.01 (0.00-0.50 C charge C-rate multiplier) */
     return (float)raw_val * 0.01f;
 }
 

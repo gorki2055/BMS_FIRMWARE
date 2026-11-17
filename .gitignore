@@ -20,6 +20,14 @@ build/
 *.lst
 *.exe
 
+# LaTeX build artifacts & MiKTeX cache
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+.miktex/
+
 # Ghidra project lock and user files
 *.lock
 *.lock~

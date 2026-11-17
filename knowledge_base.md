@@ -244,22 +244,132 @@ The curve spans 21 SOC steps ($100\%$ down to $0\%$ in $5\%$ increments):
 - **5%:** 2,831 mV (Calibrated Under-Voltage Warning)
 - **0%:** 2,621 mV (Calibrated Under-Voltage Cutoff)
 
-#### 2. Table 1: Chemical Capacity Availability Matrix ($21 \times 12$)
-- **SRAM Address:** `0x20020572` (decompressed from Flash `0x08023184`, used in `FUN_08010654`).
-- **Rows (21):** SOC $100\%$ to $0\%$ in $5\%$ intervals.
-- **Columns (12):** Temperature bands ($< -20^\circ\text{C}$ up to $\ge 60^\circ\text{C}$).
-- **Formula:** Capacity availability in Ah $= \text{Matrix}[row][col] \times 0.1$.
-- Models chemical capacity loss under severe sub-zero cold ($<-20^\circ\text{C} \rightarrow 0\text{ Ah}$) versus optimal range ($25^\circ\text{C} \rightarrow 2.0\text{ Ah}$).
+#### 2. Table 1: Chemical Capacity Availability Matrix ($21 \times 12$) ([`s_capacity_avail_matrix_21x12`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L50-L72))
+- **SRAM Address:** `0x20020572` (decompressed from Flash `0x08023184`, evaluated in `FUN_08010654`).
+- **Purpose:** Acts as a **2D Dynamic Discharge C-Rate Limiter / Current Derating Map** that tells the motor controller / VCU the maximum safe continuous discharge current based on remaining SOC and cell temperature.
+- **Rows (21):** SOC $100\%$ down to $0\%$ in $5\%$ intervals (Row 0 = $100\%$, Row 20 = $0\%$).
+- **Columns (12):** Temperature bands (`< -20°C`, `-20..-10°C`, `-10..0°C`, `0..10°C`, `10..15°C`, `15..25°C`, `25..40°C`, `40..45°C`, `45..50°C`, `50..55°C`, `55..60°C`, `>= 60°C`).
+- **C-Rate Multiplier & Current Formula (`FUN_08010654`):**
+  $$\text{C-Rate Multiplier} = \text{Matrix}[row][col] \times 0.1 \quad (0.0\text{ C to }2.0\text{ C})$$
+  $$\text{Max Allowable Discharge Current (A)} = \min\!\left(\text{C-Rate Multiplier} \times \frac{\text{Pack\_Capacity\_mAh}}{1000.0},\; \text{DSG\_OCP\_Limit\_A} - 1.0\right)$$
+- **Example Values for a 70 Ah (`70,000 mAh`) Pack:**
+  - **$85\text{–}100\%$ SOC, $25\text{–}40^\circ\text{C}$:** `20` $\rightarrow 2.0\text{ C} \times 70\text{ Ah} = 140\text{ A}$ (clamped by `DSG_OCP_Limit_A - 1`).
+  - **$50\%$ SOC, $15\text{–}25^\circ\text{C}$:** `15` $\rightarrow 1.5\text{ C} \times 70\text{ Ah} = 105\text{ A}$ (clamped by OCP limit).
+  - **$30\%$ SOC, $15\text{–}25^\circ\text{C}$:** `10` $\rightarrow 1.0\text{ C} \times 70\text{ Ah} = 70\text{ A}$ (gradual power reduction as SOC drops).
+  - **$10\%$ SOC, $25\text{–}40^\circ\text{C}$:** `5` $\rightarrow 0.5\text{ C} \times 70\text{ Ah} = 35\text{ A}$ (limp-home derating to prevent voltage sag below `2621 mV` UVP).
+  - **$40\%$ SOC, $0\text{–}10^\circ\text{C}$:** `4` $\rightarrow 0.4\text{ C} \times 70\text{ Ah} = 28\text{ A}$ (cold-cell impedance derating).
+  - **Extreme Cold (`< -20°C`) or Over-Temp (`>= 60°C`):** `0` $\rightarrow 0.0\text{ C} = 0\text{ A}$ (discharge forbidden).
+- **CAN Broadcast & Overload Throttling (`FUN_0801b55c`):** The resulting `Max Discharge Current (A)` byte is transmitted on CAN ID `0x141F1001` Byte `D6` for the motor controller/VCU. If measured discharge current exceeds `Max_Allow + 3.0 A` for $> 20$ ticks, `FUN_0801b55c` dynamically ramps the advertised limit down further.
 
-#### 3. Table 2: Thermal Voltage Relaxation Matrix ($21 \times 13$)
-- **SRAM Address:** `0x20020720` (decompressed from Flash `0x08023184`, used in `FUN_080103c8`).
-- **Rows (21):** SOC $100\%$ to $0\%$ in $5\%$ intervals.
-- **Columns (13):** Temperature bands ($< 0^\circ\text{C}$ to $\ge 51^\circ\text{C}$).
-- **Formula:** Thermal voltage shift $= \text{Matrix}[row][col] \times 0.01$.
-- Compensates for NCM internal resistance impedance voltage sag across temperatures.
+#### 3. Table 2: Dynamic Charge Current C-Rate Matrix ($21 \times 13$) ([`s_thermal_relax_matrix_21x13`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L83-L105))
+- **SRAM Address:** `0x20020720` (decompressed from Flash `0x08023184`, evaluated in `FUN_080103c8`).
+- **Purpose:** Acts as a **2D Dynamic Charge Current C-Rate Limiter / CC-CV Taper Map** that commands the external charger (`0x1806E5F4`) on the maximum safe charging current based on SOC and cell temperature, preventing lithium plating below `0°C` and thermal runaway at `>= 51°C`. *(Note: reconstructed `bms_ocv.c` names this array `s_thermal_relax_matrix_21x13`, but in the compiled binary it is strictly a charge current derating matrix.)*
+- **Rows (21):** SOC $100\%$ down to $0\%$ in $5\%$ intervals (Row 0 = $100\%$, Row 20 = $0\%$).
+- **Columns (13):** Temperature bands (`< 0°C`, `0..4°C`, `5..9°C`, `10..14°C`, `15..19°C`, `20..24°C`, `25..29°C`, `30..34°C`, `35..39°C`, `40..43°C`, `44..45°C`, `46..50°C`, `>= 51°C`). If `min_temp_c < 0°C`, `FUN_080103c8` forces `min_temp_c` so any freezing cell blocks charging.
+- **C-Rate Multiplier & Charge Current Formula (`FUN_080103c8`):**
+  $$\text{Charge C-Rate} = \text{Matrix}[row][col] \times 0.01 \quad (0.00\text{ C to }0.50\text{ C})$$
+  $$\text{Max Allowable Charge Current (A)} = \min\!\left(\text{Charge C-Rate} \times \frac{\text{Pack\_Capacity\_mAh}}{1000.0},\; \text{CHG\_OCP\_Limit\_A} - 1.0\right)$$
+- **Example Values for a 70 Ah (`70,000 mAh`) Pack:**
+  - **$0\text{–}60\%$ SOC, $25\text{–}39^\circ\text{C}$:** `50` $\rightarrow 0.50\text{ C} \times 70\text{ Ah} = 35.0\text{ A}$ (peak charge rate, matching `0x0042` OCP Chg = `35.0 A`).
+  - **$50\%$ SOC, $15\text{–}19^\circ\text{C}$:** `40` $\rightarrow 0.40\text{ C} \times 70\text{ Ah} = 28.0\text{ A}$ (cool-ambient derating).
+  - **$80\text{–}95\%$ SOC, $25\text{–}34^\circ\text{C}$:** `30` $\rightarrow 0.30\text{ C} \times 70\text{ Ah} = 21.0\text{ A}$ (high-SOC CV taper).
+  - **$95\%$ SOC, $0\text{–}9^\circ\text{C}$:** `10` $\rightarrow 0.10\text{ C} \times 70\text{ Ah} = 7.0\text{ A}$ (cold + near-full trickle charge).
+  - **$100\%$ SOC (any temp), `< 0°C`, or `>= 51°C`:** `0` $\rightarrow 0.00\text{ C} = 0.0\text{ A}$ (charging stopped).
+- **Charger Control CAN Broadcast (`FUN_0801a848`):** Computes the charge current limit (summing Pack 1 + Pack 2 limits in dual-battery mode `*0x20020673 == 2`), packs Target Charge Voltage (`0.1 V/bit`), Max Charge Current (`0.1 A/bit`), and a Charge Stop/Allow flag, and transmits J1939 charger frame **`0x1806E5F4`**.
 
 ### 6.4 Parasitic Self-Discharge & BMS Quiescent Drain Compensation (`FUN_0801fc8c` @ `0x0801FC8C`)
-- Every 75 rest intervals, the firmware calculates cumulative parasitic BMS board consumption plus temperature-dependent cell self-discharge (`(fVar10 + pfVar6[0x18] * *pfVar5) / 12.0`) and decrements remaining capacity (`pfVar5[2]`).
+- Every 75 rest intervals, the firmware calculates cumulative parasitic BMS board consumption plus temperature-dependent cell self-discharge (`(15.0f + temp_factor * total_capacity_mah) / 12.0f`, where `temp_factor` is `0.0004f` above `35°C` else `0.0002f`) and decrements `remaining_mah` (minimum `1 mAh`) and updates `soc_pct`.
+
+### 6.5 `bms_ocv.c` Runtime Architecture & Hybrid SOC Estimator ([`bms_ocv.c`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c))
+[`bms_ocv.c`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c) combines the 1D/2D OCV lookup tables, thermal compensation, Coulomb counting, and self-discharge drain into a unified SOC engine:
+
+| Function | Purpose & Logic |
+| :--- | :--- |
+| [`bms_ocv_get_capacity_derate()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L155-L161) | Maps `(soc_pct, temp_c)` via [`get_soc_row()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L147-L153) & [`get_temp_col_avail()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L110-L123) into [`s_capacity_avail_matrix_21x12`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L50-L72) (`21×12`) and scales by `0.1f` to return the `0.0–2.0 C` discharge C-rate derating factor used by `FUN_08010654` to compute Max Allowable Discharge Current (`A`). |
+| [`bms_ocv_get_thermal_derate()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L163-L169) | Maps `(soc_pct, temp_c)` via [`get_temp_col_thermal()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L128-L142) into [`s_thermal_relax_matrix_21x13`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L83-L105) (`21×13`) and scales by `0.01f` (represents the `0.00–0.50 C` charge C-rate derating factor used by `FUN_080103c8` for CAN `0x1806E5F4`). |
+| [`bms_ocv_lookup_voltage()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L171-L198) | Linearly interpolates `s_ncm_ocv_table_mv` between adjacent `5%` SOC brackets and applies a thermal shift (`thermal_derate * 10.0f` mV subtracted when `temp_c < 25°C`, added when `>= 25°C`). |
+| [`bms_ocv_lookup_soc()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L200-L236) | Compensates cold voltage drop below `20°C` (`+2 mV/°C`), clamps against `4185 mV` (`100%`) / `2621 mV` (`0%`), and linearly interpolates between `5%` breakpoints to return `0–100%` SOC. |
+| [`bms_soc_estimator_init()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L242-L260) | Initializes `soc_pct` from `bms_ocv_lookup_soc(min_cell_mv, min_temp_c)` (defaults to `100%` if `min_cell_mv == 0`), computes `remaining_mah`, and sets `is_relaxed = true`. |
+| [`bms_soc_estimator_update()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L262-L307) | **Dual-mode estimator:**<br>1. **At Rest (`|current_ma| < 800 mA` for `>= 20 s`):** Polarization has decayed (`is_relaxed = true`); snaps `soc_pct` & `remaining_mah` directly to `bms_ocv_lookup_soc(min_cell_mv, min_temp_c)` and clears `accum_coulombs_mas`.<br>2. **Under Load:** Resets `rest_duration_sec = 0` and integrates `current_ma * delta_ms` (`1 mAh = 3,600,000 mA·ms`), updating `remaining_mah` (clamped `[0, total_capacity_mah]`) and `soc_pct`. |
+| [`bms_ocv_apply_self_discharge()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L315-L335) | Deducts periodic quiescent/self-discharge mAh (`max(1, round((15.0 + temp_factor * total_capacity_mah) / 12.0))`) from `remaining_mah` and updates `soc_pct`. |
+
+#### Step-by-Step Hybrid SOC Estimator Flow
+
+```mermaid
+flowchart TD
+    subgraph Boot ["1. Boot Initialization (bms_soc_estimator_init)"]
+        B1["Read Telemetry: min_cell_mv, min_temp_c"] --> B2{"Is min_cell_mv == 0?"}
+        B2 -- "Yes (Uninitialized)" --> B3["Default SOC = 100%"]
+        B2 -- "No (Normal Boot)" --> B4["bms_ocv_lookup_soc: 21-point NCM curve"]
+        B4 --> B5["Cold Offset: +2 mV/deg C if temp < 20 deg C"]
+        B5 --> B6["Piecewise linear interp: 2621 mV = 0% to 4185 mV = 100%"]
+        B6 --> B7["remaining_mah = total_capacity_mah * soc_pct / 100"]
+        B3 --> B7
+        B7 --> B8["State: is_relaxed = true, rest_duration_sec = 20, accum = 0"]
+    end
+
+    subgraph Tick ["2. 1-Second Periodic Tick (bms_core_process_1s_tick)"]
+        T1["Measure Pack Current (current_ma)"] --> T2{"|current_ma| >= 800 mA ?"}
+    end
+
+    subgraph Load ["Path A: Under Load (Coulomb Counting)"]
+        T2 -- "Yes (Active Load/Charge)" --> L1["Reset rest_duration_sec = 0, is_relaxed = false"]
+        L1 --> L2["delta_mas = current_ma * 1000 ms"]
+        L2 --> L3["accum_coulombs_mas += delta_mas"]
+        L3 --> L4{"|accum_coulombs_mas| >= 3,600,000 ?"}
+        L4 -- "No (< 1 mAh accumulator)" --> OUT["Updated Telemetry: soc_pct, remaining_mah"]
+        L4 -- "Yes (>= 1 mAh)" --> L5["delta_mah = accum_coulombs_mas / 3,600,000"]
+        L5 --> L6["remaining_mah = clamp(remaining_mah + delta_mah, 0, total_cap)"]
+        L6 --> L7["soc_pct = remaining_mah * 100 / total_cap"]
+        L7 --> L8["accum_coulombs_mas %= 3,600,000"]
+        L8 --> OUT
+    end
+
+    subgraph Rest ["Path B: Settling / At Rest (OCV Drift Recalibration)"]
+        T2 -- "No (Quiescent < 800 mA)" --> R1["rest_duration_sec += 1"]
+        R1 --> R2{"rest_duration_sec >= 20 s ?"}
+        R2 -- "No (0-19 s Settling Window)" --> L2
+        R2 -- "Yes (Polarization Decayed)" --> R3["is_relaxed = true"]
+        R3 --> R4["bms_ocv_lookup_soc(min_cell_mv, min_temp_c)"]
+        R4 --> R5["Snap soc_pct = ocv_soc"]
+        R5 --> R6["Snap remaining_mah = total_cap * ocv_soc / 100"]
+        R6 --> R7["Reset accum_coulombs_mas = 0"]
+        R7 --> OUT
+    end
+
+    subgraph SelfDsg ["3. Long-Idle Self-Discharge (FUN_0801fc8c)"]
+        S1{"rest_duration_sec > 0 and % 75 == 0 ?"}
+        S1 -- "Yes (Every 75 s Rest)" --> S2["temp_factor = (max_temp_c > 35) ? 0.0004 : 0.0002"]
+        S2 --> S3["loss_mah = round((15.0 + temp_factor * total_cap) / 12.0)"]
+        S3 --> S4["remaining_mah = max(0, remaining_mah - loss_mah)"]
+        S4 --> S5["soc_pct = remaining_mah * 100 / total_cap"]
+        S5 --> OUT
+        S1 -- "No" --> OUT
+    end
+
+    subgraph Output ["4. System State Output"]
+        OUT --> O1["CAN Broadcast: 0x141F1001 (Byte D1: SOC %)"]
+        OUT --> O2["Modbus Register: 0x0006 (SOC %)"]
+        OUT --> O3["Dynamic Power Derating: FUN_08010654 & FUN_080103c8"]
+    end
+
+    B8 -.-> T1
+    Tick -.-> SelfDsg
+```
+- **Why Hybrid:** Under load, internal resistance ($I \cdot R$) and polarization distort cell voltage, so SOC must track **integrated current (Coulomb counting)**. At rest, shunt offset errors accumulate over time, so SOC **recalibrates against Open-Circuit Voltage (OCV)** once polarization decays.
+- **1. Boot Initialization ([`bms_soc_estimator_init()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L242-L260) via [`bms_core_init()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_core.c#L40)):**
+  - Looks up initial `soc_pct` from [`bms_ocv_lookup_soc(min_cell_mv, min_temp_c)`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L200-L236) (lowest cell governs UVP cutoff; cold compensation adds `(20 - temp_c) * 2 mV` below `20°C`; clamps `[2621 mV = 0%, 4185 mV = 100%]`; defaults to `100%` if `min_cell_mv == 0`).
+  - Initializes `remaining_mah = (total_capacity_mah * ocv_soc) / 100`, sets `is_relaxed = true`, `rest_duration_sec = 20`, and clears `accum_coulombs_mas = 0`.
+- **2. 1-Second Dynamic Update ([`bms_core_process_1s_tick()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_core.c#L428-L438) $\rightarrow$ [`bms_soc_estimator_update(ctx, 1000)`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L262-L307)):**
+  - **Path A — Under Load (`|current_ma| >= 800 mA`, [`BMS_OCV_QUIESCENT_CURRENT_MA`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/include/bms_ocv.h#L18)):**
+    - Resets `rest_duration_sec = 0` and clears `is_relaxed = false`.
+    - Integrates `accum_coulombs_mas += current_ma * delta_ms` (`int64_t` sub-mAh precision). Whenever `|accum_coulombs_mas| >= 3,600,000` ($1\text{ mAh}$), updates `remaining_mah` (clamped `[0, total_capacity_mah]`), keeps the modulo remainder, and recalculates `soc_pct = (remaining_mah * 100) / total_capacity_mah`.
+  - **Path B — Settling / At Rest (`|current_ma| < 800 mA`):**
+    - For `rest_duration_sec < 20 s`, increments `rest_duration_sec` while continuing Coulomb counting via Path A.
+    - Once `rest_duration_sec >= 20 s` ([`BMS_OCV_RELAX_DURATION_SEC`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/include/bms_ocv.h#L19)), sets `is_relaxed = true`, snaps `soc_pct`, `last_ocv_soc`, and `remaining_mah` directly to `bms_ocv_lookup_soc(min_cell_mv, min_temp_c)`, and zeroes `accum_coulombs_mas`.
+- **3. Long-Idle Self-Discharge & 100% Latch ([`bms_ocv_apply_self_discharge()`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/firmware_source/src/bms_ocv.c#L315-L335), [`FUN_0801fc8c`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/decompiled/bms_firmware_decompiled.c#L25365-L25450)):**
+  - Every `75` rest seconds (`BMS_SELF_DSG_INTERVAL_SEC`), deducts `round((15.0 + temp_factor * total_capacity_mah) / 12.0)` mAh (`temp_factor = 0.0004` above `35°C`, else `0.0002`; for `70 Ah`: `~2 mAh` at `<= 35°C`, `~4 mAh` at `> 35°C`, min `1 mAh`).
+  - In the compiled binary ([`FUN_0801fc8c`](file:///d:/Yatri/battery%20system/projects/BMS_FIRMWARE/decompiled/bms_firmware_decompiled.c#L25413-L25422)), if `remaining_mah == total_capacity_mah` while idle (no charge/discharge active), raw SOC latches cleanly to `200` (`100.0%` at `0.5%/bit`).
 
 ---
 
