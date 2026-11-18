@@ -152,12 +152,12 @@ static uint8_t get_soc_row(uint8_t soc_pct) {
     return row;
 }
 
-float bms_ocv_get_capacity_derate(uint8_t soc_pct, int16_t temp_c) {
+float bms_ocv_get_capacity_derate(uint8_t soc_pct, int16_t temp_c) {     //this function is used to get soc and temperature based on that it will give the max allowable discharge current on 
     uint8_t row = get_soc_row(soc_pct);
     uint8_t col = get_temp_col_avail(temp_c);
     uint8_t raw_val = s_capacity_avail_matrix_21x12[row][col];
     /* FUN_08010654 scales by 0.1 (0.0-2.0 C discharge C-rate multiplier) */
-    return (float)raw_val * 0.1f;
+    return (float)raw_val * 0.1f;    //multiplying lookup table by 0.1f make exact c rate  
 }
 
 float bms_ocv_get_thermal_derate(uint8_t soc_pct, int16_t temp_c) {

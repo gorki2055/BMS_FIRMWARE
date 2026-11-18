@@ -703,8 +703,99 @@ int main(void) {
     assert(bms_parallel_get_manager()->active_pack_id == BMS_CAN_SLAVE_SID);
     printf("PASS (CMD 0x44 OVP=4200mV/DSG=110A, Parallel 0x141DF001 -> Slave 0x1D)\n");
 
+    /* Test 29: Dynamic Discharge & Charge Current Derating (FUN_08010654 / FUN_080103c8 -> CAN 0x141F1001 D6) */
+    printf("[Test 29] Dynamic Current Derating (bms_core_update_dynamic_limits)... ");
+    ctx.faults.all = 0;
+    ctx.door_lock_prohibit_dsg = false;
+    ctx.telemetry.total_capacity_mah = 70000;
+
+    /* 29a. Optimal condition: 100% SOC, 25°C -> 2.0C * 70Ah = 140A -> clamped to 70A (70000 mA) */
+    ctx.telemetry.soc_pct = 100;
+    ctx.telemetry.min_temp_c = 25;
+    bms_core_update_dynamic_limits(&ctx);
+    assert(ctx.limits.dsg_ocp_ma == 70000);
+    assert(ctx.limits.chg_ocp_ma == 0); /* 0.00C at 100% SOC (charge complete) */
+    bms_can_send_capacity_soh(&ctx);
+    assert(bms_can_get_last_tx()->data[6] == 70);
+
+    /* 29b. Limp-home low SOC: 10% SOC, 25°C -> 0.5C * 70Ah = 35A (35000 mA), Chg = 0.50C * 70Ah = 35A */
+    ctx.telemetry.soc_pct = 10;
+    ctx.telemetry.min_temp_c = 25;
+    bms_core_update_dynamic_limits(&ctx);
+    assert(ctx.limits.dsg_ocp_ma == 35000);
+    assert(ctx.limits.chg_ocp_ma == 35000);
+    bms_can_send_capacity_soh(&ctx);
+    assert(bms_can_get_last_tx()->data[6] == 35);
+
+    /* 29c. Cold ambient derating: 40% SOC, 5°C -> 0.4C * 70Ah = 28A (28000 mA), Chg = 0.20C * 70Ah = 14A */
+    ctx.telemetry.soc_pct = 40;
+    ctx.telemetry.min_temp_c = 5;
+    bms_core_update_dynamic_limits(&ctx);
+    assert(ctx.limits.dsg_ocp_ma == 28000);
+    assert(ctx.limits.chg_ocp_ma == 14000);
+    bms_can_send_capacity_soh(&ctx);
+    assert(bms_can_get_last_tx()->data[6] == 28);
+
+    /* 29d. Extreme deep freeze cutoff: 50% SOC, -25°C -> 0.0C -> 0A (0 mA) */
+    ctx.telemetry.soc_pct = 50;
+    ctx.telemetry.min_temp_c = -25;
+    bms_core_update_dynamic_limits(&ctx);
+    assert(ctx.limits.dsg_ocp_ma == 0);
+    assert(ctx.limits.chg_ocp_ma == 0);
+    bms_can_send_capacity_soh(&ctx);
+    assert(bms_can_get_last_tx()->data[6] == 0);
+    printf("PASS (100%%@25C=70A, 10%%@25C=35A, 40%%@5C=28A, 50%%@-25C=0A on CAN D6)\n");
+
+    /* Test 30: J1939 Charger Frame (0x1806E5F4, FUN_0801a848) & 20-Tick Overload Throttling (FUN_0801b55c) */
+    printf("[Test 30] J1939 Charger Demand (0x1806E5F4) & 20-Tick Overload Throttle... ");
+    ctx.faults.all = 0;
+    ctx.limits.cell_ovp_mv = 4185; /* 4185 * 21 / 100 = 878 (87.8V) */
+    ctx.telemetry.total_capacity_mah = 70000;
+    ctx.telemetry.soc_pct = 50;
+    ctx.telemetry.min_temp_c = 25;
+    bms_core_update_dynamic_limits(&ctx); /* Chg = 35.0A (350 * 0.1A) */
+    bms_can_send_charger_demand(&ctx);
+    const CanMessage_t *chg_tx = bms_can_get_last_tx();
+    assert(chg_tx->id == BMS_CAN_ID_J1939_CHARGER && chg_tx->dlc == 8);
+    assert((uint16_t)((chg_tx->data[0] << 8) | chg_tx->data[1]) == 878); /* 87.8V Big-Endian */
+    assert((uint16_t)((chg_tx->data[2] << 8) | chg_tx->data[3]) == 350); /* 35.0A Big-Endian */
+    assert(chg_tx->data[4] == 0); /* 0 = Charge Allow */
+
+    /* At 100% SOC, charger must be commanded to 0.0A and Stop (data[4] = 1) */
+    ctx.telemetry.soc_pct = 100;
+    bms_core_update_dynamic_limits(&ctx);
+    bms_can_send_charger_demand(&ctx);
+    chg_tx = bms_can_get_last_tx();
+    assert((uint16_t)((chg_tx->data[2] << 8) | chg_tx->data[3]) == 0);
+    assert(chg_tx->data[4] == 1); /* 1 = Charge Stop */
+
+    /* Verify 20-tick overload throttle at 10% SOC, 25°C (allowed = 35A, load = -42A) */
+    ctx.telemetry.soc_pct = 10;
+    ctx.telemetry.min_temp_c = 25;
+    ctx.telemetry.current_ma = -42000; /* 42A > 35A + 3A */
+    ctx.overload_throttled = false;
+    ctx.overload_ticks = 0;
+    for (int t = 0; t < 20; t++) {
+        bms_core_update_dynamic_limits(&ctx);
+    }
+    assert(ctx.overload_throttled == false);
+    bms_core_update_dynamic_limits(&ctx); /* 21st tick (> 20) triggers throttle: 35 - 2*(42-35) = 21A */
+    assert(ctx.overload_throttled == true && ctx.throttled_dsg_a == 21);
+    bms_can_send_capacity_soh(&ctx);
+    assert(bms_can_get_last_tx()->data[6] == 21);
+
+    /* Verify 50-tick recovery when load drops to -10A (< 35A - 5A) */
+    ctx.telemetry.current_ma = -10000;
+    for (int t = 0; t < 51; t++) {
+        bms_core_update_dynamic_limits(&ctx);
+    }
+    assert(ctx.overload_throttled == false);
+    bms_can_send_capacity_soh(&ctx);
+    assert(bms_can_get_last_tx()->data[6] == 35);
+    printf("PASS (0x1806E5F4: 87.8V/35.0A BE, Overload -42A -> 21A throttle -> 35A recovery)\n");
+
     printf("\n========================================================\n");
-    printf("[✔] All 28 BMS Firmware Unit Tests PASSED Successfully!\n");
+    printf("[✔] All 30 BMS Firmware Unit Tests PASSED Successfully!\n");
     printf("========================================================\n");
 
     return 0;

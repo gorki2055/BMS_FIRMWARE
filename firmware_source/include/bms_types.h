@@ -135,6 +135,9 @@ typedef struct {
     uint8_t           balance_phase;        /* Current 3-phase interleaved balancing phase (0..2, FUN_08008af4) */
     bool              calibration_authorized; /* True when MCU 96-bit UID + EEPROM 0x0100 lock matches (FUN_08017b3c) */
     float             cell_cal_gain[BMS_SERIES_CELLS]; /* Per-cell voltage gain multipliers (FUN_08016000) */
+    bool              overload_throttled;   /* True when 20-tick discharge overload throttle active (FUN_0801b55c) */
+    uint8_t           throttled_dsg_a;      /* Dynamically throttled CAN D6 discharge current limit in A (FUN_0801b55c) */
+    uint8_t           overload_ticks;       /* Consecutive overload/recovery ticks (FUN_0801b55c) */
     char              serial_number[32];
 } BmsContext_t;
 

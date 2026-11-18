@@ -94,8 +94,11 @@ static void send_capacity_soc_frame(const BmsContext_t *ctx, uint8_t did, uint8_
     /* D6: Max allowable discharge current in 1A units (0 if discharge prohibited) */
     if (ctx->door_lock_prohibit_dsg || ctx->faults.all != 0) {
         msg.data[6] = 0;
+    } else if (ctx->overload_throttled) {
+        /* 20-tick overload dynamic throttle active (FUN_0801b55c lines 20553-20554) */
+        msg.data[6] = ctx->throttled_dsg_a;
     } else {
-        uint32_t max_dsg_a = (ctx->limits.dsg_ocp_ma > 0)
+        uint32_t max_dsg_a = (ctx->limits.dsg_ocp_ma >= 0)
                            ? ((uint32_t)ctx->limits.dsg_ocp_ma / 1000U)
                            : BMS_MAX_CONTINUOUS_DSG_A;
         msg.data[6] = (uint8_t)(max_dsg_a > 255U ? 255U : max_dsg_a);
@@ -441,6 +444,45 @@ void bms_can_send_general_response(uint8_t did, uint8_t ack_cmd, uint8_t ack_idx
     msg.data[0] = ack_cmd;
     msg.data[1] = ack_idx;
     msg.data[2] = status; /* 0x00 = Success, 0x01 = Fail */
+    bms_can_transmit(&msg);
+}
+
+/**
+ * @brief Send J1939 External Charger Control Frame (CAN ID 0x1806E5F4, DLC = 8)
+ * @note Reconstructed from FUN_0801a848 (Flash 0x0801A848):
+ *       Byte 0..1: Target Charge Voltage (0.1 V/LSB, Big-Endian)
+ *       Byte 2..3: Max Allowable Charge Current (0.1 A/LSB, Big-Endian)
+ *       Byte 4   : Charge Control Flag (0x00 = Allow/Start Charging, 0x01 = Stop/Inhibit)
+ *       Byte 5..7: Reserved (0x00)
+ */
+void bms_can_send_charger_demand(const BmsContext_t *ctx) {
+    if (!ctx) return;
+
+    CanMessage_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.id  = BMS_CAN_ID_J1939_CHARGER;
+    msg.dlc = 8;
+
+    uint16_t cell_ovp = (ctx->limits.cell_ovp_mv > 0U) ? ctx->limits.cell_ovp_mv : BMS_CELL_OVP_MV;
+    uint16_t target_v_0_1v = (uint16_t)(((uint32_t)cell_ovp * (uint32_t)BMS_SERIES_CELLS) / 100U);
+
+    bool chg_inhibit = (ctx->faults.bits.cell_ovp || ctx->faults.bits.pack_ovp ||
+                        ctx->faults.bits.chg_ocp  || ctx->faults.bits.chg_otp  ||
+                        ctx->faults.bits.chg_utp  || ctx->faults.bits.mos_otp  ||
+                        ctx->limits.chg_ocp_ma <= 0);
+
+    uint16_t max_chg_0_1a = 0U;
+    if (!chg_inhibit) {
+        max_chg_0_1a = (uint16_t)((uint32_t)ctx->limits.chg_ocp_ma / 100U);
+    }
+
+    /* Big-Endian packing per J1939 0x1806E5F4 & FUN_0801a848 lines 20403-20407 */
+    msg.data[0] = (uint8_t)((target_v_0_1v >> 8) & 0xFFU);
+    msg.data[1] = (uint8_t)(target_v_0_1v & 0xFFU);
+    msg.data[2] = (uint8_t)((max_chg_0_1a >> 8) & 0xFFU);
+    msg.data[3] = (uint8_t)(max_chg_0_1a & 0xFFU);
+    msg.data[4] = chg_inhibit ? 1U : 0U;
+
     bms_can_transmit(&msg);
 }
 

@@ -37,6 +37,7 @@ Extracted from Keil scatter-load decompression tables (`0x08023184` $\rightarrow
 
 ```
 ├── README.md                   # Repository landing page and project overview
+├── knowledge_base.md           # Master technical knowledge base & reverse engineering pipeline
 ├── PROJECT_OVERVIEW.md         # Comprehensive reverse engineering technical specification
 ├── FINDINGS.md                 # Technical findings log & memory mapping analysis
 ├── parse_hex.py                # Python container parser and binary extractor
@@ -47,12 +48,12 @@ Extracted from Keil scatter-load decompression tables (`0x08023184` $\rightarrow
 │   ├── Makefile                # GNU Makefile for arm-none-eabi-gcc
 │   ├── n32g45x_flash.ld        # Linker script (Flash @ 0x08008000, 144 KB SRAM)
 │   ├── cmsis/                  # Nations N32G452 register maps & Cortex-M4 vector table
-│   ├── include/                # Typed headers (config, telemetry, CAN, AFE, parallel)
-│   ├── src/                    # Core BMS logic, CAN handler, DVC1124 driver, HAL
-│   └── tests/                  # Native host unit test runner (validates all algorithms)
+│   ├── include/                # Typed headers (config, types, core, CAN, OCV, AFE, Modbus, storage)
+│   ├── src/                    # Complete C source (AFE driver, OCV engine, Modbus, EEPROM, Core, CAN)
+│   └── tests/                  # Native host unit test runner (15 unit test suites)
 │
 ├── decompiled/                 # Full decompiled C source output from Ghidra
-│   └── bms_firmware_decompiled.c # 526 decompiled functions (819 KB, 28,150 lines)
+│   └── bms_firmware_decompiled.c # 481 defined function symbols (819 KB, 28,150 lines)
 │
 ├── ghidra_project/             # Ready-to-open Ghidra 12.2 project database
 │   ├── BMS_Project.gpr         # Project descriptor file
@@ -69,6 +70,7 @@ Extracted from Keil scatter-load decompression tables (`0x08023184` $\rightarrow
 │   └── schematic/              # Board schematics (SPB24-DVC24-006-0606/1010)
 │
 └── scripts/                    # Automation scripts for analysis and tooling
+    ├── pack_firmware_container.py # Vendor CAN Flasher container packager & CRC32 validator
     ├── GhidraSetupBms.java     # Headless Ghidra script (memory maps, vectors, Thumb mode)
     ├── run_ghidra_headless.bat # Batch automation for Ghidra analysis
     └── export_decompiled.bat   # Script to re-export decompiled C code
@@ -84,5 +86,26 @@ Extracted from Keil scatter-load decompression tables (`0x08023184` $\rightarrow
 3. Navigate to `ghidra_project/` and open `BMS_Project.gpr`.
 4. Double click `firmware_app_0x08008000.ihex` to browse all labeled vectors, peripheral memory maps, and decompiled routines.
 
-### Building the Reconstructed Source Code
-See [`firmware_source/README.md`](firmware_source/README.md) for full build instructions with `arm-none-eabi-gcc` or `CMake`.
+### Running the Host-Native Unit Test Suite (15 Tests)
+Compile and run directly on your PC with GCC (e.g. MSYS2 UCRT64 GCC):
+```powershell
+gcc -Wall -Wextra -I firmware_source/include -I firmware_source/cmsis `
+    firmware_source/tests/test_bms_logic.c `
+    firmware_source/src/bms_core.c `
+    firmware_source/src/bms_can.c `
+    firmware_source/src/bms_parallel.c `
+    firmware_source/src/bms_hal.c `
+    firmware_source/src/dvc1124_afe.c `
+    firmware_source/src/bms_ocv.c `
+    firmware_source/src/bms_modbus.c `
+    firmware_source/src/bms_storage.c `
+    -o test_bms_logic.exe
+
+.\test_bms_logic.exe
+```
+
+### Packaging Custom Firmware for Vendor CAN Flasher
+To package your compiled binary into a `.hex` container ready for the vendor CAN flashing tool:
+```powershell
+python scripts/pack_firmware_container.py output/firmware_app_0x08008000.bin --version V28
+```

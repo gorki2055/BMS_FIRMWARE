@@ -44,18 +44,24 @@ firmware_source/
 │   └── startup_n32g45x.c   # Interrupt vector table & Reset_Handler
 ├── include/
 │   ├── bms_config.h        # Factory thresholds & hardware pin assignments
-│   ├── bms_types.h         # Telemetry, faults, and state machine types
+│   ├── bms_types.h         # Telemetry, faults, limits, and state machine types
 │   ├── bms_core.h          # Core protection supervisor prototypes
 │   ├── bms_can.h           # CAN 250k protocol parser & frame builders
 │   ├── bms_parallel.h      # Dual-pack 5% switching logic prototypes
-│   ├── dvc1124_afe.h       # Devechip DVC1124-1 register definitions
+│   ├── bms_ocv.h           # 2D OCV-SOC lookup engine & Coulomb counting fusion
+│   ├── bms_modbus.h        # RS-485 / Modbus RTU & PC diagnostic protocol
+│   ├── bms_storage.h       # 24Cxx EEPROM storage & parameter calibration manager
+│   ├── dvc1124_afe.h       # Devechip DVC1124-1 register definitions & burst ADC
 │   └── bms_hal.h           # GPIO, CAN, and I2C hardware abstraction
 └── src/
     ├── main.c              # Application superloop (10ms, 100ms, 1s tasks)
     ├── bms_core.c          # Protections, balancing decision, and state machine
     ├── bms_can.c           # CAN packet reception, "READ" dispatch, Modbus CRC16
     ├── bms_parallel.c      # Dual battery parallel arbitration (Master 5% -> Slave -> Master)
-    ├── dvc1124_afe.c       # DVC1124 I2C read/write with CRC8 check
+    ├── bms_ocv.c           # 2D chemical matrices, temperature derating & rest calibration
+    ├── bms_modbus.c        # Modbus RTU (FC 0x03/0x06) & proprietary 0xEA 0xD1 telemetry
+    ├── bms_storage.c       # EEPROM 32-byte page boundary verified write & lifetime tracking
+    ├── dvc1124_afe.c       # DVC1124 I2C read/write with CRC8 check & cell voltages
     └── bms_hal.c           # N32G452 GPIO and peripheral control
 ```
 

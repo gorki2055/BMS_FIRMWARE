@@ -21,6 +21,8 @@ void bms_core_init(BmsContext_t *ctx) {
     ctx->telemetry.total_capacity_mah = BMS_NOMINAL_CAPACITY_MAH;
     ctx->telemetry.soc_pct = 100;
     ctx->telemetry.soh_pct = 100;
+    ctx->telemetry.min_temp_c = 25;
+    ctx->telemetry.max_temp_c = 25;
     ctx->precharge_bus_ready = true; /* Default ready unless capacitive load hold-off simulated */
 
     /* Initialize default protection thresholds from calibrated configuration */
@@ -237,11 +239,73 @@ void bms_core_update_balancing(BmsContext_t *ctx) {
     ctx->balance_phase = (uint8_t)((ctx->balance_phase + 1U) % 3U);
 }
 
+void bms_core_update_dynamic_limits(BmsContext_t *ctx) {
+    if (!ctx) return;
+
+    /* 1. Get allowable discharge C-rate from 21x12 SOC/Temp matrix (FUN_08010654) */
+    float dsg_c_rate = bms_ocv_get_capacity_derate(ctx->telemetry.soc_pct, ctx->telemetry.min_temp_c);
+
+    /* 2. Compute dynamic allowable discharge current (mA) */
+    uint32_t allowed_dsg_ma = (uint32_t)((dsg_c_rate * (float)ctx->telemetry.total_capacity_mah) + 0.5f);
+
+    /* 3. Clamp to hardware shunt / fuse limit (70.0 A) */
+    if (allowed_dsg_ma > (BMS_MAX_CONTINUOUS_DSG_A * 1000U)) {
+        allowed_dsg_ma = (BMS_MAX_CONTINUOUS_DSG_A * 1000U);
+    }
+
+    /* 4. Update live operational discharge limit */
+    ctx->limits.dsg_ocp_ma = (int32_t)allowed_dsg_ma;
+
+    /* 5. Get allowable charge C-rate from 21x13 SOC/Temp matrix (FUN_080103c8) */
+    float chg_c_rate = bms_ocv_get_thermal_derate(ctx->telemetry.soc_pct, ctx->telemetry.min_temp_c);
+    uint32_t allowed_chg_ma = (uint32_t)((chg_c_rate * (float)ctx->telemetry.total_capacity_mah) + 0.5f);
+    if (allowed_chg_ma > (BMS_MAX_CHARGE_CURRENT_A * 1000U)) {
+        allowed_chg_ma = (BMS_MAX_CHARGE_CURRENT_A * 1000U);
+    }
+    ctx->limits.chg_ocp_ma = (int32_t)allowed_chg_ma;
+
+    /* 6. 20-Tick Dynamic Overload Throttling & 50-Tick Recovery (FUN_0801b55c lines 20536-20568) */
+    float allowed_a = (float)(allowed_dsg_ma / 1000U);
+    float abs_dsg_a = (ctx->telemetry.current_ma < 0)
+                    ? ((float)(-ctx->telemetry.current_ma) / 1000.0f)
+                    : 0.0f;
+
+    if (!ctx->overload_throttled) {
+        if (allowed_a > 0.0f && abs_dsg_a > (allowed_a + 3.0f)) {
+            ctx->overload_ticks++;
+            if (ctx->overload_ticks > 20U) {
+                ctx->overload_ticks = 0U;
+                float throttled = (1.0f - (((abs_dsg_a - allowed_a) * 2.0f) / allowed_a)) * allowed_a;
+                if (throttled < 1.0f) {
+                    throttled = 1.0f;
+                }
+                ctx->throttled_dsg_a = (uint8_t)throttled;
+                ctx->overload_throttled = true;
+            }
+        } else {
+            ctx->overload_ticks = 0U;
+        }
+    } else {
+        if (abs_dsg_a < (allowed_a - 5.0f)) {
+            ctx->overload_ticks++;
+            if (ctx->overload_ticks > 50U) {
+                ctx->overload_ticks = 0U;
+                ctx->overload_throttled = false;
+            }
+        } else {
+            ctx->overload_ticks = 0U;
+        }
+    }
+}
+
 void bms_core_calculate_soc(BmsContext_t *ctx) {
     if (!ctx) return;
 
     /* Hybrid Coulomb Counting under load + 2D Chemical OCV Recalibration at rest */
     bms_soc_estimator_update(ctx, 1000);
+
+    /* Update dynamic discharge & charge current limits from 2D matrices */
+    bms_core_update_dynamic_limits(ctx);
 }
 
 /**

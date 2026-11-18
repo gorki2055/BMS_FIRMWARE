@@ -135,6 +135,10 @@ void bms_can_send_balancing_group(const BmsContext_t *ctx, uint8_t did, uint8_t 
 void bms_can_send_general_response(uint8_t did, uint8_t ack_cmd, uint8_t ack_idx, uint8_t status);
 void bms_can_send_long_packet(uint8_t did, uint8_t orig_cmd, uint8_t sub_cmd, const uint8_t *payload, uint16_t len);
 
+/* J1939 External Charger Control Frame (FUN_0801a848 @ 0x0801A848, CAN ID 0x1806E5F4) */
+#define BMS_CAN_ID_J1939_CHARGER     0x1806E5F4UL
+void bms_can_send_charger_demand(const BmsContext_t *ctx);
+
 /* CRC16 & Test Inspection Helpers */
 uint16_t bms_crc16_modbus(const uint8_t *buf, uint16_t len);
 uint32_t bms_can_get_tx_count(void);
