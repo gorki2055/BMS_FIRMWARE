@@ -23,6 +23,7 @@ void bms_core_init(BmsContext_t *ctx) {
     ctx->telemetry.soh_pct = 100;
     ctx->telemetry.min_temp_c = 25;
     ctx->telemetry.max_temp_c = 25;
+    ctx->telemetry.est_chg_time_min = 0xFFFFU;
     ctx->precharge_bus_ready = true; /* Default ready unless capacitive load hold-off simulated */
 
     /* Initialize default protection thresholds from calibrated configuration */
@@ -298,6 +299,38 @@ void bms_core_update_dynamic_limits(BmsContext_t *ctx) {
     }
 }
 
+/**
+ * @brief Calculate estimated remaining charging time in minutes
+ * @note Reconstructed directly from FUN_0800b460 (Flash 0x0800B7D6 - 0x0800B842, SRAM 0x20022354):
+ *       - When not charging: est_chg_time_min = 0xFFFF (transmitted as 0 on CAN 0x40/0x02)
+ *       - When charging:
+ *         if (remaining_mah < total_capacity_mah && charge_current_a > 0.0f)
+ *             est_chg_time_min = (uint16_t)(((total_capacity_mah - remaining_mah) * 0.06f) / charge_current_a)
+ *         else
+ *             est_chg_time_min = 0
+ */
+void bms_core_calculate_charging_time(BmsContext_t *ctx) {
+    if (!ctx) return;
+    BmsTelemetry_t *t = &ctx->telemetry;
+
+    bool is_charging = (ctx->state == BMS_STATE_CHARGE || t->current_ma > 0);
+    if (!is_charging) {
+        t->est_chg_time_min = 0xFFFFU;
+        return;
+    }
+
+    float total_mah = (float)t->total_capacity_mah;
+    float rem_mah   = (float)t->remaining_mah;
+    float chg_curr_a = (t->current_ma > 0) ? ((float)t->current_ma / 1000.0f) : 0.0f;
+
+    if (total_mah > rem_mah && chg_curr_a > 0.0f) {
+        float est_min = ((total_mah - rem_mah) * 0.06f) / chg_curr_a;
+        t->est_chg_time_min = (uint16_t)((uint32_t)est_min);
+    } else {
+        t->est_chg_time_min = 0U;
+    }
+}
+
 void bms_core_calculate_soc(BmsContext_t *ctx) {
     if (!ctx) return;
 
@@ -306,6 +339,9 @@ void bms_core_calculate_soc(BmsContext_t *ctx) {
 
     /* Update dynamic discharge & charge current limits from 2D matrices */
     bms_core_update_dynamic_limits(ctx);
+
+    /* Update estimated remaining charge time (FUN_0800b460 @ 0x0800B7D6) */
+    bms_core_calculate_charging_time(ctx);
 }
 
 /**

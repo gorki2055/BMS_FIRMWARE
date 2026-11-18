@@ -62,16 +62,28 @@ int main(void) {
     assert(ctx.faults.bits.cell_uvp == 1);
     printf("PASS (UVP tripped at 2600mV)\n");
 
-    /* Test 6: Multi-Pack Role Arbitration via Serial Number */
-    printf("[Test 6] Multi-Pack Serial Number Arbitration... ");
+    /* Test 6: Multi-Pack Role Arbitration via Serial Number (FUN_0800c108) */
+    printf("[Test 6] Multi-Pack Serial Number Arbitration (FUN_0800c108)... ");
+    /* Equal capacity [6..8], smaller sequence wins Master 0x14 */
     bms_parallel_evaluate_role(&ctx, "6495-SPB24-006-A01", "6495-SPB24-006-A02");
     assert(ctx.role == BMS_ROLE_MASTER);
     assert(ctx.can_sid == 0x14);
 
+    /* Equal capacity [6..8], larger sequence becomes Slave 0x1D */
     bms_parallel_evaluate_role(&ctx, "6495-SPB24-006-A05", "6495-SPB24-006-A02");
     assert(ctx.role == BMS_ROLE_SLAVE);
     assert(ctx.can_sid == 0x1D);
-    printf("PASS (Master = 0x14, Slave = 0x1D)\n");
+
+    /* Larger capacity at bytes [6..8] wins Master 0x14 even with larger sequence */
+    bms_parallel_evaluate_role(&ctx, "6495-S0704-006-A05", "6495-S0504-006-A01");
+    assert(ctx.role == BMS_ROLE_MASTER);
+    assert(ctx.can_sid == 0x14);
+
+    /* Identical serial number conflict resets to standalone (can_sid = 0) */
+    bms_parallel_evaluate_role(&ctx, "6495-SPB24-006-A01", "6495-SPB24-006-A01");
+    assert(ctx.role == BMS_ROLE_STANDALONE);
+    assert(ctx.can_sid == 0);
+    printf("PASS (Cap-first Master=0x14, Seq Slave=0x1D, Conflict=Standalone/0)\n");
 
     /* Test 7: State of Health (SOH) Cycle Degradation Model */
     printf("[Test 7] Dynamic SOH Cycle Degradation Model... ");
@@ -794,8 +806,43 @@ int main(void) {
     assert(bms_can_get_last_tx()->data[6] == 35);
     printf("PASS (0x1806E5F4: 87.8V/35.0A BE, Overload -42A -> 21A throttle -> 35A recovery)\n");
 
+    /* Test 31: Exact Binary Charging Time Estimation (FUN_0800b460 @ 0x0800B7D6 & CAN 0x40/0x02 @ 0x0801BDEC) */
+    printf("[Test 31] Binary Charging Time Estimation & CAN 0x40/0x02 Output... ");
+    bms_core_init(&ctx);
+    assert(ctx.telemetry.est_chg_time_min == 0xFFFFU);
+    ctx.state = BMS_STATE_STANDBY;
+    ctx.telemetry.current_ma = 0;
+    bms_core_calculate_charging_time(&ctx);
+    assert(ctx.telemetry.est_chg_time_min == 0xFFFFU);
+    bms_can_send_cycle_stats(&ctx, BMS_CAN_DID_VCU, CAN_CMD_PACK_CONFIG);
+    const CanMessage_t *cyc_tx = bms_can_get_last_tx();
+    assert((uint16_t)(cyc_tx->data[6] | (cyc_tx->data[7] << 8)) == 0U);
+
+    /* Charging at 35.0A, 35Ah remaining out of 70Ah -> ((70000 - 35000) * 0.06) / 35.0 = 60 min */
+    ctx.state = BMS_STATE_CHARGE;
+    ctx.telemetry.total_capacity_mah = 70000;
+    ctx.telemetry.remaining_mah = 35000;
+    ctx.telemetry.current_ma = 35000;
+    bms_core_calculate_charging_time(&ctx);
+    assert(ctx.telemetry.est_chg_time_min == 60U);
+    bms_can_send_cycle_stats(&ctx, BMS_CAN_DID_VCU, CAN_CMD_PACK_CONFIG);
+    cyc_tx = bms_can_get_last_tx();
+    assert((uint16_t)(cyc_tx->data[6] | (cyc_tx->data[7] << 8)) == 60U); /* 0x003C LE */
+
+    /* Charging at 14.0A, 21Ah remaining -> ((70000 - 49000) * 0.06) / 14.0 = 90 min */
+    ctx.telemetry.remaining_mah = 49000;
+    ctx.telemetry.current_ma = 14000;
+    bms_core_calculate_charging_time(&ctx);
+    assert(ctx.telemetry.est_chg_time_min == 90U);
+
+    /* Full battery while in CHARGE state -> est_chg_time_min == 0 */
+    ctx.telemetry.remaining_mah = 70000;
+    bms_core_calculate_charging_time(&ctx);
+    assert(ctx.telemetry.est_chg_time_min == 0U);
+    printf("PASS (Standby=0xFFFF->CAN 0, 35Ah@35A=60min, 21Ah@14A=90min, Full=0min)\n");
+
     printf("\n========================================================\n");
-    printf("[✔] All 30 BMS Firmware Unit Tests PASSED Successfully!\n");
+    printf("[✔] All 31 BMS Firmware Unit Tests PASSED Successfully!\n");
     printf("========================================================\n");
 
     return 0;

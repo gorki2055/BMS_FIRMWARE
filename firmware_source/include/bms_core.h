@@ -16,6 +16,7 @@ void bms_core_check_protections(BmsContext_t *ctx);
 void bms_core_calculate_soc(BmsContext_t *ctx);
 void bms_core_calculate_soh(BmsContext_t *ctx);
 void bms_core_update_dynamic_limits(BmsContext_t *ctx);
+void bms_core_calculate_charging_time(BmsContext_t *ctx);
 void bms_core_update_balancing(BmsContext_t *ctx);
 void bms_core_record_cycles(BmsContext_t *ctx, uint16_t new_cycle_count);
 

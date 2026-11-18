@@ -326,7 +326,8 @@ void bms_can_send_cycle_stats(const BmsContext_t *ctx, uint8_t did, uint8_t cmd)
     msg.id  = BMS_CAN_MAKE_ID(s_own_sid, did, cmd, CAN_IDX_CFG_CYCLES);
     msg.dlc = 8;
 
-    uint16_t chg_time_01min = (uint16_t)(t->est_chg_time_min * 10U);
+    /* Verified at 0x0801BDEC - 0x0801BE0C: 0xFFFF (not charging) sends 0, else 1 min/LSB LE */
+    uint16_t chg_time_min = (t->est_chg_time_min == 0xFFFFU) ? 0U : t->est_chg_time_min;
 
     msg.data[0] = (uint8_t)(t->cycle_count & 0xFFU);
     msg.data[1] = (uint8_t)((t->cycle_count >> 8) & 0xFFU);
@@ -334,8 +335,8 @@ void bms_can_send_cycle_stats(const BmsContext_t *ctx, uint8_t did, uint8_t cmd)
     msg.data[3] = (uint8_t)((t->max_uncharged_hours >> 8) & 0xFFU);
     msg.data[4] = (uint8_t)(t->recent_uncharged_hours & 0xFFU);
     msg.data[5] = (uint8_t)((t->recent_uncharged_hours >> 8) & 0xFFU);
-    msg.data[6] = (uint8_t)(chg_time_01min & 0xFFU);
-    msg.data[7] = (uint8_t)((chg_time_01min >> 8) & 0xFFU);
+    msg.data[6] = (uint8_t)(chg_time_min & 0xFFU);
+    msg.data[7] = (uint8_t)((chg_time_min >> 8) & 0xFFU);
 
     bms_can_transmit(&msg);
 }

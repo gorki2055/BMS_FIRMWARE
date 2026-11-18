@@ -20,12 +20,36 @@ void bms_parallel_evaluate_role(BmsContext_t *ctx, const char *local_sn, const c
     if (!ctx || !local_sn || !peer_sn) return;
 
     /*
-     * Rule: Compare Serial Numbers:
-     * 1. Determine capacity level in SN (larger capacity = Master 0x14).
-     * 2. If equal, compare production date & sequence (smaller number = Master 0x14).
+     * Exact arbitration rules from FUN_0800c108 (Flash 0x0800C108) & FUN_08011a60:
+     * 1. Identical serial number -> conflict: reset to standalone (can_sid = 0).
+     * 2. Compare 3-byte capacity field at bytes [6..8]: larger capacity = Master (0x14).
+     * 3. If capacity matches, compare date & sequence string: smaller = Master (0x14).
      */
     int cmp = strcmp(local_sn, peer_sn);
-    if (cmp <= 0) {
+    if (cmp == 0) {
+        ctx->role = BMS_ROLE_STANDALONE;
+        ctx->can_sid = 0U;
+        return;
+    }
+
+    bool is_master = false;
+    if (strlen(local_sn) >= 9U && strlen(peer_sn) >= 9U) {
+        uint32_t local_cap = ((uint32_t)(uint8_t)local_sn[6] << 16) |
+                             ((uint32_t)(uint8_t)local_sn[7] << 8)  |
+                             (uint32_t)(uint8_t)local_sn[8];
+        uint32_t peer_cap  = ((uint32_t)(uint8_t)peer_sn[6] << 16)  |
+                             ((uint32_t)(uint8_t)peer_sn[7] << 8)   |
+                             (uint32_t)(uint8_t)peer_sn[8];
+        if (local_cap != peer_cap) {
+            is_master = (local_cap > peer_cap);
+        } else {
+            is_master = (cmp < 0);
+        }
+    } else {
+        is_master = (cmp < 0);
+    }
+
+    if (is_master) {
         ctx->role = BMS_ROLE_MASTER;
         ctx->can_sid = BMS_CAN_MASTER_SID;
     } else {
@@ -47,7 +71,7 @@ void bms_parallel_process_tick(BmsContext_t *ctx) {
     switch (s_parallel_mgr.stage) {
         case PARALLEL_STAGE_MASTER_ACTIVE:
             /* Master discharges until SOC drops below 5% */
-            if (local_soc <= 5 && s_parallel_mgr.peer_connected && !s_parallel_mgr.peer_in_uvp) {
+            if (local_soc <= 5 && s_parallel_mgr.peer_connected && !s_parallel_mgr.peer_in_uvp) {   //checks if another pack is in under voltage protection stage or not 
                 bms_parallel_request_switch(ctx, BMS_CAN_SLAVE_SID);
                 s_parallel_mgr.stage = PARALLEL_STAGE_SLAVE_ACTIVE;
             }
@@ -104,10 +128,30 @@ void bms_parallel_send_heartbeat(const BmsContext_t *ctx) {
 }
 
 /**
- * @brief Process internal parallel-bus CAN frame (0x141DF001, 0x101..0x106, 0x201..0x203, FUN_0801ca08)
+ * @brief Process internal parallel-bus CAN frame (0x141DF001, 0x101..0x106, 0x201..0x203, FUN_08011474 / FUN_0801ca08)
  */
 bool bms_parallel_process_can_rx(BmsContext_t *ctx, uint32_t can_id, const uint8_t *data, uint8_t dlc) {
     if (!ctx || !data || dlc < 4) return false;
+
+    if (can_id == (BMS_PARALLEL_CAN_ID_SYNC_BASE + 1U) && (data[0] == 0xC7U || data[0] == 0xC8U)) {
+        /* 0x102 Slave status frame (FUN_0801f044 / FUN_08011474 @ 0x08011474) */
+        s_parallel_mgr.peer_connected         = true;
+        s_parallel_mgr.peer_in_uvp            = (data[1] & 0x02U) != 0U;
+        s_parallel_mgr.peer_soc_pct           = data[3];
+        s_parallel_mgr.last_peer_heartbeat_ms = ctx->uptime_seconds * 1000UL;
+        return true;
+    }
+
+    if (can_id == (BMS_PARALLEL_CAN_ID_SYNC_BASE + 2U)) {
+        /* 0x103 Slave pack voltage/current frame (FUN_0801f044 / FUN_08011474 @ 0x08011474) */
+        s_parallel_mgr.peer_connected         = true;
+        s_parallel_mgr.peer_pack_voltage_mv   = (uint32_t)data[0] |
+                                                ((uint32_t)data[1] << 8) |
+                                                ((uint32_t)data[2] << 16) |
+                                                ((uint32_t)data[3] << 24);
+        s_parallel_mgr.last_peer_heartbeat_ms = ctx->uptime_seconds * 1000UL;
+        return true;
+    }
 
     if (can_id == BMS_PARALLEL_CAN_ID_HEARTBEAT ||
         (can_id >= BMS_PARALLEL_CAN_ID_SYNC_BASE && can_id <= (BMS_PARALLEL_CAN_ID_SYNC_BASE + 5U)) ||
